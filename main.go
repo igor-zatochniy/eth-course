@@ -41,23 +41,41 @@ func getETHPrice() (string, error) {
 }
 
 func startPriceAlerts(bot *tgbotapi.BotAPI) {
-	ticker := time.NewTicker(3 * time.Hour)
-	for range ticker.C {
+	sendUpdate := func() {
+		subs.mu.Lock()
+		count := len(subs.chats)
+		subs.mu.Unlock()
+
+		if count == 0 {
+			log.Println("Розсилка скасована: немає активних підписників")
+			return
+		}
+
 		price, err := getETHPrice()
 		if err != nil {
-			log.Println("Помилка при отриманні ціни для розсилки:", err)
-			continue
+			log.Println("Помилка отримання ціни:", err)
+			return
 		}
 
 		text := fmt.Sprintf("🕒 *Регулярне оновлення*\nКурс Ethereum (ETH): *$%s*", price)
 
 		subs.mu.Lock()
+		log.Printf("Запуск розсилки для %d користувачів", len(subs.chats))
 		for chatID := range subs.chats {
 			msg := tgbotapi.NewMessage(chatID, text)
 			msg.ParseMode = "Markdown"
 			bot.Send(msg)
 		}
 		subs.mu.Unlock()
+	}
+
+	// Перша розсилка відразу при запуску
+	sendUpdate()
+
+	// Наступні — кожні 5 хвилин
+	ticker := time.NewTicker(5 * time.Minute)
+	for range ticker.C {
+		sendUpdate()
 	}
 }
 
@@ -66,7 +84,7 @@ func main() {
 
 	botToken := os.Getenv("TELEGRAM_APITOKEN")
 	if botToken == "" {
-		log.Fatal("Критична помилка: TELEGRAM_APITOKEN не знайдено")
+		log.Fatal("Помилка: TELEGRAM_APITOKEN не встановлено")
 	}
 
 	bot, err := tgbotapi.NewBotAPI(botToken)
@@ -79,18 +97,18 @@ func main() {
 	go startPriceAlerts(bot)
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Бот %s працює у фоновому режимі!", bot.Self.UserName)
+		fmt.Fprintf(w, "Бот %s працює!", bot.Self.UserName)
 	})
 
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "10000"
+		port = "8000"
 	}
 
 	go func() {
 		log.Printf("HTTP-сервер запущено на порту %s", port)
-		if err := http.ListenAndServe("0.0.0.0:"+port, nil); err != nil {
-			log.Fatal("Помилка сервера:", err)
+		if err := http.ListenAndServe(":"+port, nil); err != nil {
+			log.Fatal(err)
 		}
 	}()
 
@@ -107,36 +125,26 @@ func main() {
 
 		switch update.Message.Command() {
 		case "start":
-			msg := tgbotapi.NewMessage(
-				chatID,
-				"Привіт! Я бот-індикатор курсу ETH.\n\nКоманди:\n/price — дізнатися поточний курс\n/subscribe — отримувати сповіщення кожні 3 години\n/unsubscribe — скасувати підписку",
-			)
+			msg := tgbotapi.NewMessage(chatID, "Привіт! Я бот-індикатор курсу ETH.\n\n/price — курс зараз\n/subscribe — отримувати звіт кожні 5 хв\n/unsubscribe — відписатися")
 			bot.Send(msg)
 
 		case "subscribe":
 			subs.mu.Lock()
 			subs.chats[chatID] = true
 			subs.mu.Unlock()
-			bot.Send(
-				tgbotapi.NewMessage(
-					chatID,
-					"✅ Ви підписалися на розсилку курсу ETH (кожні 3 години).",
-				),
-			)
+			bot.Send(tgbotapi.NewMessage(chatID, "✅ Ви підписалися на оновлення кожні 5 хвилин."))
 
 		case "unsubscribe":
 			subs.mu.Lock()
 			delete(subs.chats, chatID)
 			subs.mu.Unlock()
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Ви скасували підписку."))
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ Ви відписалися від розсилки."))
 
 		case "price":
 			price, err := getETHPrice()
-			text := ""
+			text := fmt.Sprintf("💰 Поточний курс ETH: *$%s*", price)
 			if err != nil {
-				text = "Вибачте, не вдалося отримати дані від біржі."
-			} else {
-				text = fmt.Sprintf("💰 Поточний курс ETH: *$%s*", price)
+				text = "Помилка отримання даних з біржі."
 			}
 			msg := tgbotapi.NewMessage(chatID, text)
 			msg.ParseMode = "Markdown"
