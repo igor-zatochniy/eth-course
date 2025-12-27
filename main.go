@@ -1,30 +1,27 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/joho/godotenv"
+	_ "github.com/lib/pq" // Драйвер для PostgreSQL
 )
+
+var db *sql.DB
 
 type BinancePrice struct {
 	Symbol string `json:"symbol"`
 	Price  string `json:"price"`
 }
 
-type Subscribers struct {
-	mu    sync.Mutex
-	chats map[int64]bool
-}
-
-var subs = Subscribers{chats: make(map[int64]bool)}
-
+// Функція для отримання ціни з Binance
 func getETHPrice() (string, error) {
 	client := http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get("https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT")
@@ -40,39 +37,68 @@ func getETHPrice() (string, error) {
 	return data.Price, nil
 }
 
+// Ініціалізація бази даних
+func initDB() {
+	var err error
+	connStr := os.Getenv("DATABASE_URL")
+	db, err = sql.Open("postgres", connStr)
+	if err != nil {
+		log.Fatal("Помилка підключення до БД:", err)
+	}
+
+	// Створення таблиці, якщо вона не існує
+	query := `
+	CREATE TABLE IF NOT EXISTS subscribers (
+		chat_id BIGINT PRIMARY KEY
+	);`
+	_, err = db.Exec(query)
+	if err != nil {
+		log.Fatal("Помилка створення таблиці:", err)
+	}
+	log.Println("База даних готова до роботи.")
+}
+
+// Функція для розсилки
 func startPriceAlerts(bot *tgbotapi.BotAPI) {
 	sendUpdate := func() {
-		subs.mu.Lock()
-		count := len(subs.chats)
-		subs.mu.Unlock()
+		// Отримуємо список підписників з бази
+		rows, err := db.Query("SELECT chat_id FROM subscribers")
+		if err != nil {
+			log.Println("Помилка отримання підписників:", err)
+			return
+		}
+		defer rows.Close()
 
-		if count == 0 {
-			log.Println("Розсилка скасована: немає активних підписників")
+		var chatIDs []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err == nil {
+				chatIDs = append(chatIDs, id)
+			}
+		}
+
+		if len(chatIDs) == 0 {
+			log.Println("Розсилка скасована: 0 підписників у базі")
 			return
 		}
 
 		price, err := getETHPrice()
 		if err != nil {
-			log.Println("Помилка отримання ціни:", err)
+			log.Println("Помилка ціни:", err)
 			return
 		}
 
 		text := fmt.Sprintf("🕒 *Регулярне оновлення*\nКурс Ethereum (ETH): *$%s*", price)
-
-		subs.mu.Lock()
-		log.Printf("Запуск розсилки для %d користувачів", len(subs.chats))
-		for chatID := range subs.chats {
-			msg := tgbotapi.NewMessage(chatID, text)
+		for _, id := range chatIDs {
+			msg := tgbotapi.NewMessage(id, text)
 			msg.ParseMode = "Markdown"
 			bot.Send(msg)
 		}
-		subs.mu.Unlock()
+		log.Printf("Розсилка виконана для %d користувачів", len(chatIDs))
 	}
 
-	// Перша розсилка відразу при запуску
-	sendUpdate()
+	sendUpdate() // Перший запуск відразу
 
-	// Наступні — кожні 5 хвилин
 	ticker := time.NewTicker(5 * time.Minute)
 	for range ticker.C {
 		sendUpdate()
@@ -81,12 +107,9 @@ func startPriceAlerts(bot *tgbotapi.BotAPI) {
 
 func main() {
 	_ = godotenv.Load()
+	initDB() // Запускаємо БД
 
 	botToken := os.Getenv("TELEGRAM_APITOKEN")
-	if botToken == "" {
-		log.Fatal("Помилка: TELEGRAM_APITOKEN не встановлено")
-	}
-
 	bot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
 		log.Panic(err)
@@ -96,20 +119,14 @@ func main() {
 
 	go startPriceAlerts(bot)
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Бот %s працює!", bot.Self.UserName)
-	})
-
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8000"
-	}
-
+	// Веб-сервер для Koyeb
 	go func() {
-		log.Printf("HTTP-сервер запущено на порту %s", port)
-		if err := http.ListenAndServe(":"+port, nil); err != nil {
-			log.Fatal(err)
-		}
+		port := os.Getenv("PORT")
+		if port == "" { port = "8000" }
+		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, "Бот працює з БД!")
+		})
+		log.Fatal(http.ListenAndServe(":"+port, nil))
 	}()
 
 	u := tgbotapi.NewUpdate(0)
@@ -117,37 +134,29 @@ func main() {
 	updates := bot.GetUpdatesChan(u)
 
 	for update := range updates {
-		if update.Message == nil {
-			continue
-		}
-
+		if update.Message == nil { continue }
 		chatID := update.Message.Chat.ID
 
 		switch update.Message.Command() {
-		case "start":
-			msg := tgbotapi.NewMessage(chatID, "Привіт! Я бот-індикатор курсу ETH.\n\n/price — курс зараз\n/subscribe — отримувати звіт кожні 5 хв\n/unsubscribe — відписатися")
-			bot.Send(msg)
-
 		case "subscribe":
-			subs.mu.Lock()
-			subs.chats[chatID] = true
-			subs.mu.Unlock()
-			bot.Send(tgbotapi.NewMessage(chatID, "✅ Ви підписалися на оновлення кожні 5 хвилин."))
+			_, err := db.Exec("INSERT INTO subscribers (chat_id) VALUES ($1) ON CONFLICT DO NOTHING", chatID)
+			if err != nil {
+				bot.Send(tgbotapi.NewMessage(chatID, "Помилка при підписці."))
+			} else {
+				bot.Send(tgbotapi.NewMessage(chatID, "✅ Ви підписані! Тепер дані збережені в базі."))
+			}
 
 		case "unsubscribe":
-			subs.mu.Lock()
-			delete(subs.chats, chatID)
-			subs.mu.Unlock()
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Ви відписалися від розсилки."))
+			_, err := db.Exec("DELETE FROM subscribers WHERE chat_id = $1", chatID)
+			if err != nil {
+				bot.Send(tgbotapi.NewMessage(chatID, "Помилка при відписці."))
+			} else {
+				bot.Send(tgbotapi.NewMessage(chatID, "❌ Вас видалено з бази."))
+			}
 
 		case "price":
-			price, err := getETHPrice()
-			text := fmt.Sprintf("💰 Поточний курс ETH: *$%s*", price)
-			if err != nil {
-				text = "Помилка отримання даних з біржі."
-			}
-			msg := tgbotapi.NewMessage(chatID, text)
-			msg.ParseMode = "Markdown"
+			price, _ := getETHPrice()
+			msg := tgbotapi.NewMessage(chatID, "💰 Курс ETH: $"+price)
 			bot.Send(msg)
 		}
 	}
