@@ -16,11 +16,10 @@ import (
 
 var db *sql.DB
 
-// Фіксуємо київський час (UTC+2 для зими)
-// Якщо захочете літній час, зміните 2 на 3, 
-// або ми пізніше додамо автоматику.
+// Фиксируем киевское время
 var kyivLoc = time.FixedZone("Kyiv", 2*60*60)
 
+// Клавиатура с кнопкой обновления
 var priceKeyboard = tgbotapi.NewInlineKeyboardMarkup(
 	tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData("🔄 Оновити зараз", "refresh_price"),
@@ -75,7 +74,6 @@ func startPriceAlerts(bot *tgbotapi.BotAPI) {
 			return
 		}
 
-		// Використовуємо наш фіксований пояс
 		currentTime := time.Now().In(kyivLoc).Format("15:04")
 		text := fmt.Sprintf("🕒 *Регулярне оновлення (%s)*\nКурс Ethereum (ETH): *$%s*", currentTime, price)
 
@@ -114,7 +112,7 @@ func main() {
 		port := os.Getenv("PORT")
 		if port == "" { port = "8000" }
 		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprintf(w, "Бот працює стабільно!")
+			fmt.Fprintf(w, "Бот працює!")
 		})
 		http.ListenAndServe(":"+port, nil)
 	}()
@@ -149,12 +147,39 @@ func main() {
 		chatID := update.Message.Chat.ID
 
 		switch update.Message.Command() {
+		case "start":
+			welcomeText := "👋 *Вітаю! Я твій особистий ETH-помічник.*\n\n" +
+				"Я можу відстежувати курс Ethereum і надсилати тобі сповіщення, щоб ти завжди був у курсі ринку.\n\n" +
+				"*Ось мої команди:*\n" +
+				"✅ /subscribe — Підписатися на розсилку курсу (кожні 5 хвилин).\n" +
+				"❌ /unsubscribe — Скасувати підписку.\n" +
+				"💰 /price — Дізнатися актуальний курс прямо зараз.\n" +
+				"ℹ️ /start — Показати це меню ще раз.\n\n" +
+				"Всі дані надійно зберігаються, тому я не забуду про твою підписку навіть після перезавантаження!"
+			
+			msg := tgbotapi.NewMessage(chatID, welcomeText)
+			msg.ParseMode = "Markdown"
+			bot.Send(msg)
+
 		case "subscribe":
-			db.Exec("INSERT INTO subscribers (chat_id) VALUES ($1) ON CONFLICT DO NOTHING", chatID)
-			bot.Send(tgbotapi.NewMessage(chatID, "✅ Ви підписані на оновлення!"))
+			_, err := db.Exec("INSERT INTO subscribers (chat_id) VALUES ($1) ON CONFLICT DO NOTHING", chatID)
+			if err != nil {
+				bot.Send(tgbotapi.NewMessage(chatID, "Помилка при підписці."))
+			} else {
+				bot.Send(tgbotapi.NewMessage(chatID, "✅ Ви успішно підписалися! Я буду надсилати курс кожні 5 хвилин."))
+			}
+
+		case "unsubscribe":
+			_, err := db.Exec("DELETE FROM subscribers WHERE chat_id = $1", chatID)
+			if err != nil {
+				bot.Send(tgbotapi.NewMessage(chatID, "Помилка при відписці."))
+			} else {
+				bot.Send(tgbotapi.NewMessage(chatID, "❌ Ви відписалися від розсилки."))
+			}
+
 		case "price":
 			price, _ := getETHPrice()
-			msg := tgbotapi.NewMessage(chatID, "💰 Курс ETH: *$"+price+"*")
+			msg := tgbotapi.NewMessage(chatID, "💰 Поточний курс ETH: *$"+price+"*")
 			msg.ParseMode = "Markdown"
 			msg.ReplyMarkup = priceKeyboard
 			bot.Send(msg)
