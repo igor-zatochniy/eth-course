@@ -15,14 +15,11 @@ import (
 )
 
 var db *sql.DB
-
-// Фиксируем киевское время
 var kyivLoc = time.FixedZone("Kyiv", 2*60*60)
 
-// Клавиатура с кнопкой обновления
 var priceKeyboard = tgbotapi.NewInlineKeyboardMarkup(
 	tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("🔄 Оновити зараз", "refresh_price"),
+		tgbotapi.NewInlineKeyboardButtonData("🔄 Оновити всі курси", "refresh_price"),
 	),
 )
 
@@ -31,9 +28,11 @@ type BinancePrice struct {
 	Price  string `json:"price"`
 }
 
-func getETHPrice() (string, error) {
+// Универсальная функция для получения курса любой пары
+func getPrice(pair string) (string, error) {
+	url := fmt.Sprintf("https://api.binance.com/api/v3/ticker/price?symbol=%s", pair)
 	client := http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get("https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT")
+	resp, err := client.Get(url)
 	if err != nil {
 		return "", err
 	}
@@ -69,13 +68,15 @@ func startPriceAlerts(bot *tgbotapi.BotAPI) {
 		}
 		defer rows.Close()
 
-		price, err := getETHPrice()
-		if err != nil {
-			return
-		}
+		btcPrice, _ := getPrice("BTCUSDT")
+		ethPrice, _ := getPrice("ETHUSDT")
+		usdtUah, _ := getPrice("USDTUAH")
 
 		currentTime := time.Now().In(kyivLoc).Format("15:04")
-		text := fmt.Sprintf("🕒 *Регулярне оновлення (%s)*\nКурс Ethereum (ETH): *$%s*", currentTime, price)
+		text := fmt.Sprintf("🕒 *Регулярне оновлення (%s)*\n\n"+
+			"🟠 *BTC*: *$%s*\n"+
+			"🔹 *ETH*: *$%s*\n"+
+			"💵 *USDT*: *%s UAH*", currentTime, btcPrice, ethPrice, usdtUah)
 
 		for rows.Next() {
 			var id int64
@@ -85,7 +86,6 @@ func startPriceAlerts(bot *tgbotapi.BotAPI) {
 			msg.ReplyMarkup = priceKeyboard
 			bot.Send(msg)
 		}
-		log.Println("Розсилка виконана")
 	}
 
 	sendUpdate()
@@ -112,7 +112,7 @@ func main() {
 		port := os.Getenv("PORT")
 		if port == "" { port = "8000" }
 		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprintf(w, "Бот працює!")
+			fmt.Fprintf(w, "Бот працює! BTC, ETH та USDT активні.")
 		})
 		http.ListenAndServe(":"+port, nil)
 	}()
@@ -124,10 +124,15 @@ func main() {
 	for update := range updates {
 		if update.CallbackQuery != nil {
 			if update.CallbackQuery.Data == "refresh_price" {
-				price, _ := getETHPrice()
+				btcPrice, _ := getPrice("BTCUSDT")
+				ethPrice, _ := getPrice("ETHUSDT")
+				usdtUah, _ := getPrice("USDTUAH")
 				currentTime := time.Now().In(kyivLoc).Format("15:04:05")
 				
-				newText := fmt.Sprintf("🕒 *Оновлено о %s (Київ)*\nКурс Ethereum (ETH): *$%s*", currentTime, price)
+				newText := fmt.Sprintf("🕒 *Оновлено о %s (Київ)*\n\n"+
+					"🟠 *BTC*: *$%s*\n"+
+					"🔹 *ETH*: *$%s*\n"+
+					"💵 *USDT*: *%s UAH*", currentTime, btcPrice, ethPrice, usdtUah)
 
 				editMsg := tgbotapi.NewEditMessageText(
 					update.CallbackQuery.Message.Chat.ID,
@@ -138,7 +143,7 @@ func main() {
 				editMsg.ReplyMarkup = &priceKeyboard
 
 				bot.Send(editMsg)
-				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Оновлено!"))
+				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Курси оновлено!"))
 			}
 			continue
 		}
@@ -148,38 +153,30 @@ func main() {
 
 		switch update.Message.Command() {
 		case "start":
-			welcomeText := "👋 *Вітаю! Я твій особистий ETH-помічник.*\n\n" +
-				"Я можу відстежувати курс Ethereum і надсилати тобі сповіщення, щоб ти завжди був у курсі ринку.\n\n" +
-				"*Ось мої команди:*\n" +
-				"✅ /subscribe — Підписатися на розсилку курсу (кожні 5 хвилин).\n" +
-				"❌ /unsubscribe — Скасувати підписку.\n" +
-				"💰 /price — Дізнатися актуальний курс прямо зараз.\n" +
-				"ℹ️ /start — Показати це меню ще раз.\n\n" +
-				"Всі дані надійно зберігаються, тому я не забуду про твою підписку навіть після перезавантаження!"
-			
+			welcomeText := "👋 *Вітаю у твоєму крипто-боті!*\n\n" +
+				"Я відстежую курси *BTC*, *ETH* та *USDT/UAH*.\n\n" +
+				"*Команди:*\n" +
+				"✅ /subscribe — отримувати курс кожні 5 хв.\n" +
+				"❌ /unsubscribe — вийти з бази.\n" +
+				"💰 /price — миттєвий курс усіх монет."
 			msg := tgbotapi.NewMessage(chatID, welcomeText)
 			msg.ParseMode = "Markdown"
 			bot.Send(msg)
 
 		case "subscribe":
-			_, err := db.Exec("INSERT INTO subscribers (chat_id) VALUES ($1) ON CONFLICT DO NOTHING", chatID)
-			if err != nil {
-				bot.Send(tgbotapi.NewMessage(chatID, "Помилка при підписці."))
-			} else {
-				bot.Send(tgbotapi.NewMessage(chatID, "✅ Ви успішно підписалися! Я буду надсилати курс кожні 5 хвилин."))
-			}
+			db.Exec("INSERT INTO subscribers (chat_id) VALUES ($1) ON CONFLICT DO NOTHING", chatID)
+			bot.Send(tgbotapi.NewMessage(chatID, "✅ Тепер ви будете отримувати курси BTC, ETH та USDT!"))
 
 		case "unsubscribe":
-			_, err := db.Exec("DELETE FROM subscribers WHERE chat_id = $1", chatID)
-			if err != nil {
-				bot.Send(tgbotapi.NewMessage(chatID, "Помилка при відписці."))
-			} else {
-				bot.Send(tgbotapi.NewMessage(chatID, "❌ Ви відписалися від розсилки."))
-			}
+			db.Exec("DELETE FROM subscribers WHERE chat_id = $1", chatID)
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ Ви відписалися від розсилки."))
 
 		case "price":
-			price, _ := getETHPrice()
-			msg := tgbotapi.NewMessage(chatID, "💰 Поточний курс ETH: *$"+price+"*")
+			btcPrice, _ := getPrice("BTCUSDT")
+			ethPrice, _ := getPrice("ETHUSDT")
+			usdtUah, _ := getPrice("USDTUAH")
+			text := fmt.Sprintf("💰 *Актуальні курси:*\n\n🟠 BTC: *$%s*\n🔹 ETH: *$%s*\n💵 USDT: *%s UAH*", btcPrice, ethPrice, usdtUah)
+			msg := tgbotapi.NewMessage(chatID, text)
 			msg.ParseMode = "Markdown"
 			msg.ReplyMarkup = priceKeyboard
 			bot.Send(msg)
