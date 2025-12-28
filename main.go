@@ -43,6 +43,7 @@ type BinancePrice struct {
 	Price  string `json:"price"`
 }
 
+// Функція отримання курсу
 func getPrice(pair string) (string, error) {
 	url := fmt.Sprintf("https://api.binance.com/api/v3/ticker/price?symbol=%s", pair)
 	client := http.Client{Timeout: 10 * time.Second}
@@ -64,12 +65,13 @@ func getPrice(pair string) (string, error) {
 	return fmt.Sprintf("%.2f", priceFloat), nil
 }
 
+// Ініціалізація БД
 func initDB() {
 	var err error
 	connStr := os.Getenv("DATABASE_URL")
 	db, err = sql.Open("postgres", connStr)
 	if err != nil {
-		log.Fatal("Критична помилка підключення до БД:", err)
+		log.Fatal("Помилка БД:", err)
 	}
 	db.Exec(`CREATE TABLE IF NOT EXISTS subscribers (chat_id BIGINT PRIMARY KEY);`)
 	db.Exec(`ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS interval_hours INT DEFAULT 1;`)
@@ -77,6 +79,7 @@ func initDB() {
 	log.Println("✅ База даних готова.")
 }
 
+// Розсилка за розкладом
 func startPriceAlerts(bot *tgbotapi.BotAPI) {
 	ticker := time.NewTicker(1 * time.Hour)
 	for range ticker.C {
@@ -116,15 +119,16 @@ func main() {
 
 	bot, err := tgbotapi.NewBotAPI(os.Getenv("TELEGRAM_APITOKEN"))
 	if err != nil {
-		log.Panic("Помилка бота:", err)
+		log.Panic("Помилка авторизації:", err)
 	}
 
+	// Команди в меню
 	commands := []tgbotapi.BotCommand{
-		{Command: "start", Description: "Головне вітання"},
-		{Command: "price", Description: "Поточні курси"},
-		{Command: "interval", Description: "Обрати частоту розсилки"},
+		{Command: "start", Description: "Вітання та функції"},
+		{Command: "price", Description: "Актуальні курси"},
+		{Command: "interval", Description: "Налаштувати частоту"},
 		{Command: "subscribe", Description: "Підписатися"},
-		{Command: "unsubscribe", Description: "Вимкнути розсилку"},
+		{Command: "unsubscribe", Description: "Відписатися"},
 	}
 	bot.Request(tgbotapi.NewSetMyCommands(commands...))
 
@@ -172,36 +176,37 @@ func main() {
 
 		switch update.Message.Command() {
 		case "start":
-			userName := update.Message.From.FirstName
-			if userName == "" { userName = "друже" }
-			welcomeText := fmt.Sprintf("> **Привіт!**\n"+
-				"Нарешті ти нас знайшов, **%s**! 🔥 Твій персональний провідник у світ крипти вже на зв’язку.\n\n"+
-				"*Що в нас найкрутішого?*\n\n"+
-				"⚡️ **Швидкість — космос!** Отримуй актуальні котирування BTC, ETH та USDT миттєво.\n"+
-				"📊 **Завжди в темі:** Налаштуй власний інтервал оновлень від 1 до 24 годин.\n"+
-				"🏦 **Гривня під контролем:** Актуальний курс USDT/UAH для вигідних операцій.\n"+
-				"🛡 **Надійність понад усе:** Твої налаштування надійно збережені в базі!\n"+
-				"📱 **Зручність 24/7:** Користуйся з будь-якого пристрою, я завжди поруч.\n\n"+
-				"Тисни **/subscribe**, щоб почати! 🚀", userName)
+			welcomeText := "Вітаю! 🖖 Твій крипто-асистент уже на зв’язку! ⚡️\n" +
+				"Хочеш тримати руку на пульсі ринку? Я допоможу!\n\n" +
+				"🔹 *Live-курси:* BTC, ETH, USDT за лічені секунди.\n" +
+				"🔹 *Smart-сповіщення:* Сам обирай, як часто отримувати апдейти (1–24 год).\n" +
+				"🔹 *UAH-маркет:* Слідкуй за реальним курсом USDT до гривні.\n" +
+				"🔹 *Stability:* Стабільна робота та збереження твоїх пресетів.\n\n" +
+				"🔥 Не гай часу! Тисни **/subscribe** та отримуй профіт від актуальної інформації!"
+			
 			msg := tgbotapi.NewMessage(chatID, welcomeText)
 			msg.ParseMode = "Markdown"
 			bot.Send(msg)
+
 		case "subscribe":
 			db.Exec("INSERT INTO subscribers (chat_id, interval_hours, last_sent) VALUES ($1, 1, NOW()) ON CONFLICT (chat_id) DO UPDATE SET last_sent = NOW()", chatID)
-			bot.Send(tgbotapi.NewMessage(chatID, "✅ Підписка активована! Змінити частоту: /interval"))
+			bot.Send(tgbotapi.NewMessage(chatID, "✅ Підписка активована! Частота за замовчуванням — 1 год. Змінити: /interval"))
+
 		case "unsubscribe":
 			db.Exec("DELETE FROM subscribers WHERE chat_id = $1", chatID)
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Ви відписалися."))
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ Ви відписалися від розсилки."))
+
 		case "interval":
-			msg := tgbotapi.NewMessage(chatID, "⚙️ *Оберіть частоту:*")
+			msg := tgbotapi.NewMessage(chatID, "⚙️ *Оберіть частоту автоматичних повідомлень:*")
 			msg.ParseMode = "Markdown"
 			msg.ReplyMarkup = intervalKeyboard
 			bot.Send(msg)
+
 		case "price":
 			btc, _ := getPrice("BTCUSDT")
 			eth, _ := getPrice("ETHUSDT")
 			usdt, _ := getPrice("USDTUAH")
-			text := fmt.Sprintf("💰 *Курси:*\n\n🟠 BTC: *$%s*\n🔹 ETH: *$%s*\n💵 USDT: *%s UAH*", btc, eth, usdt)
+			text := fmt.Sprintf("💰 *Актуальні курси:*\n\n🟠 BTC: *$%s*\n🔹 ETH: *$%s*\n💵 USDT: *%s UAH*", btc, eth, usdt)
 			msg := tgbotapi.NewMessage(chatID, text)
 			msg.ParseMode = "Markdown"
 			msg.ReplyMarkup = refreshKeyboard
