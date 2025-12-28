@@ -67,7 +67,7 @@ var messages = map[string]map[string]string{
 	},
 }
 
-// --- Клавиатуры ---
+// --- Вспомогательные функции ---
 
 func getRefreshKeyboard(lang string) *tgbotapi.InlineKeyboardMarkup {
 	text := messages[lang]["btn_upd"]
@@ -103,11 +103,13 @@ var intervalKeyboard = tgbotapi.NewInlineKeyboardMarkup(
 	),
 )
 
-// --- Логика курсов ---
-
-type BinancePrice struct {
-	Symbol string `json:"symbol"`
-	Price  string `json:"price"`
+func getLang(chatID int64) string {
+	var lang string
+	err := db.QueryRow("SELECT language_code FROM subscribers WHERE chat_id = $1", chatID).Scan(&lang)
+	if err != nil {
+		return "ua" // По умолчанию
+	}
+	return lang
 }
 
 func getPriceWithTrend(pair string, label string) string {
@@ -140,6 +142,11 @@ func getPriceWithTrend(pair string, label string) string {
 	return fmt.Sprintf("%s %s: *$%.2f* (%s)", emoji, label, currentPrice, trend)
 }
 
+type BinancePrice struct {
+	Symbol string `json:"symbol"`
+	Price  string `json:"price"`
+}
+
 func initDB() {
 	var err error
 	connStr := os.Getenv("DATABASE_URL")
@@ -154,13 +161,6 @@ func initDB() {
 	);`)
 	db.Exec(`ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS language_code TEXT DEFAULT 'ua';`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS market_prices (symbol TEXT PRIMARY KEY, price DOUBLE PRECISION);`)
-}
-
-func getLang(chatID int64) string {
-	var lang string
-	err := db.QueryRow("SELECT language_code FROM subscribers WHERE chat_id = $1", chatID).Scan(&lang)
-	if err != nil { return "ua" }
-	return lang
 }
 
 func startPriceAlerts(bot *tgbotapi.BotAPI) {
@@ -198,7 +198,7 @@ func main() {
 
 	commands := []tgbotapi.BotCommand{
 		{Command: "start", Description: "Start/Menu"},
-		{Command: "language", Description: "Change language / Змінити мову"},
+		{Command: "language", Description: "Change language"},
 		{Command: "price", Description: "Check prices"},
 		{Command: "interval", Description: "Set frequency"},
 		{Command: "subscribe", Description: "Subscribe"},
@@ -208,25 +208,31 @@ func main() {
 
 	go startPriceAlerts(bot)
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintf(w, "✅ Бот працює!") })
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintf(w, "✅ Bot is working!") })
 	go http.ListenAndServe(":"+os.Getenv("PORT"), nil)
 
 	u := tgbotapi.NewUpdate(0)
+	u.Timeout = 60
 	updates := bot.GetUpdatesChan(u)
 
 	for update := range updates {
 		if update.CallbackQuery != nil {
 			data := update.CallbackQuery.Data
 			chatID := update.CallbackQuery.Message.Chat.ID
-			lang := getLang(chatID)
-
+			
+			// ОБРАБОТКА СМЕНЫ ЯЗЫКА (Используем UPSERT)
 			if len(data) > 8 && data[:8] == "setlang_" {
 				newLang := data[8:]
-				db.Exec("UPDATE subscribers SET language_code = $1 WHERE chat_id = $2", newLang, chatID)
+				db.Exec(`INSERT INTO subscribers (chat_id, language_code) 
+						 VALUES ($1, $2) 
+						 ON CONFLICT (chat_id) DO UPDATE SET language_code = $2`, chatID, newLang)
+				
 				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "OK"))
 				bot.Send(tgbotapi.NewMessage(chatID, messages[newLang]["lang_fixed"]))
 				continue
 			}
+
+			lang := getLang(chatID)
 
 			if len(data) > 4 && data[:4] == "int_" {
 				minutes, _ := strconv.Atoi(data[4:])
@@ -248,7 +254,6 @@ func main() {
 				edit := tgbotapi.NewEditMessageText(chatID, update.CallbackQuery.Message.MessageID, text)
 				edit.ParseMode = "Markdown"
 				edit.ReplyMarkup = getRefreshKeyboard(lang)
-				
 				bot.Send(edit)
 				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "OK"))
 			}
@@ -269,7 +274,10 @@ func main() {
 			msg.ReplyMarkup = langKeyboard
 			bot.Send(msg)
 		case "subscribe":
-			db.Exec("INSERT INTO subscribers (chat_id, language_code) VALUES ($1, 'ua') ON CONFLICT (chat_id) DO UPDATE SET language_code = subscribers.language_code", chatID)
+			// Используем UPSERT, чтобы не перезаписывать язык при подписке
+			db.Exec(`INSERT INTO subscribers (chat_id, interval_minutes, last_sent, language_code) 
+					 VALUES ($1, 60, NOW(), 'ua') 
+					 ON CONFLICT (chat_id) DO UPDATE SET last_sent = NOW()`, chatID)
 			bot.Send(tgbotapi.NewMessage(chatID, messages[lang]["subscribe"]))
 		case "unsubscribe":
 			db.Exec("DELETE FROM subscribers WHERE chat_id = $1", chatID)
