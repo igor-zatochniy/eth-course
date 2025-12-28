@@ -18,10 +18,10 @@ import (
 var db *sql.DB
 var kyivLoc = time.FixedZone("Kyiv", 2*60*60)
 
-// --- СЛОВНИК ПЕРЕКЛАДІВ ---
+// --- СЛОВАРЬ ПЕРЕВОДОВ ---
 var messages = map[string]map[string]string{
 	"ua": {
-		"welcome":    "Вітаю! 🖖 Твій крипто-асистент уже на зв’язку! ⚡️\n\nХочеш тримати руку на пульсі ринку? Я допоможу!\n\n🔹 *Live-курси:* BTC, ETH, USDT за лічені секунди.\n🔹 *Smart-сповіщення:* Сам обирай, як часто отримувати апдейти (1–24 год).\n🔹 *UAH-маркет:* Слідкуй за реальним курсом USDT до гривні.\n🔹 *Stability:* Стабільна робота та збереження твоїх пресетів.\n\n🔥 Не гай часу! Тисни **/subscribe** та отримуй профіт від актуальної інформації!",
+		"welcome":    "Вітаю! 🖖 Твій крипто-асистент уже на зв’язку! ⚡️\n\nХочеш тримати руку на пульсі ринку? Я допоможу!\n\n🔹 Live-курси: BTC, ETH, USDT за лічені секунди.\n🔹 Smart-сповіщення: Сам обирай, як часто отримувати апдейти (1–24 год).\n🔹 UAH-маркет: Слідкуй за реальним курсом USDT до гривні.\n🔹 Stability: Стабільна робота та збереження твоїх пресетів.\n\n🔥 Не гай часу! Тисни **/subscribe** та отримуй профіт від актуальної інформації!",
 		"subscribe":  "✅ Підписка активована! Частота: 1 год. Змінити: /interval",
 		"unsubscribe": "❌ Ви відписалися від розсилки.",
 		"price_hdr":  "💰 *Актуальні курси:*",
@@ -36,7 +36,7 @@ var messages = map[string]map[string]string{
 		"btn_upd":    "🔄 Оновити",
 	},
 	"en": {
-		"welcome":    "Welcome! 🖖 Your crypto assistant is online! ⚡️\n\nWant to keep your finger on the pulse of the market? I'll help!\n\n🔹 *Live rates:* BTC, ETH, USDT in seconds.\n🔹 *Smart alerts:* Choose frequency (1 min – 24h).\n🔹 *UAH market:* USDT to UAH rate.\n🔹 *Stability:* Stable work and saved presets.\n\nPress **/subscribe** and stay updated!",
+		"welcome":    "Welcome! 🖖 Your crypto assistant is online! ⚡️\n\nWant to keep your finger on the pulse of the market? I'll help!\n\n🔹 Live rates: BTC, ETH, USDT in seconds.\n🔹 Smart alerts: Choose frequency (1 min – 24h).\n🔹 UAH market: Follow the real USDT to UAH rate.\n🔹 Stability: Stable operation and saving your presets.\n\n🔥 Don't waste time! Press **/subscribe** and profit from up-to-date information!",
 		"subscribe":  "✅ Subscription activated! Frequency: 1h. Change: /interval",
 		"unsubscribe": "❌ You have unsubscribed.",
 		"price_hdr":  "💰 *Current rates:*",
@@ -51,7 +51,7 @@ var messages = map[string]map[string]string{
 		"btn_upd":    "🔄 Update",
 	},
 	"ru": {
-		"welcome":    "Привет! 🖖 Твой крипто-ассистент на связи! ⚡️\n\nХочешь держать руку на пульсе рынка? Я помогу!\n\n🔹 *Live-курсы:* BTC, ETH, USDT за считанные секунды.\n🔹 *Smart-уведомления:* Выбирай частоту (1 мин – 24 ч).\n🔹 *UAH-маркет:* Курс USDT к гривне.\n🔹 *Stability:* Стабильная работа и сохранение пресетов.\n\nЖми **/subscribe** и будь в курсе!",
+		"welcome":    "Привет! 🖖 Твой крипто-ассистент уже на связи! ⚡️\n\nХочешь держать руку на пульсе рынка? Я помогу!\n\n🔹 Live-курсы: BTC, ETH, USDT за считанные секунды.\n🔹 Smart-уведомления: Сам выбирай, как часто получать апдейты (1–24 ч).\n🔹 UAH-маркет: Следи за реальным курсом USDT к гривне.\n🔹 Stability: Стабильная работа и сохранение твоих пресетов.\n\n🔥 Не теряй времени! Жми **/subscribe** и получай профит от актуальной информации!",
 		"subscribe":  "✅ Подписка активирована! Частота: 1 ч. Изменить: /interval",
 		"unsubscribe": "❌ Вы отписались от рассылки.",
 		"price_hdr":  "💰 *Актуальные курсы:*",
@@ -67,7 +67,7 @@ var messages = map[string]map[string]string{
 	},
 }
 
-// --- Клавіатури ---
+// --- Клавиатуры ---
 
 func getRefreshKeyboard(lang string) *tgbotapi.InlineKeyboardMarkup {
 	text := messages[lang]["btn_upd"]
@@ -103,6 +103,8 @@ var intervalKeyboard = tgbotapi.NewInlineKeyboardMarkup(
 	),
 )
 
+// --- Логика курсов ---
+
 type BinancePrice struct {
 	Symbol string `json:"symbol"`
 	Price  string `json:"price"`
@@ -132,7 +134,6 @@ func getPriceWithTrend(pair string, label string) string {
 
 	db.Exec(`INSERT INTO market_prices (symbol, price) VALUES ($1, $2) ON CONFLICT (symbol) DO UPDATE SET price = EXCLUDED.price`, pair, currentPrice)
 
-	// ЗМІНЕНО: Значок гривні перед сумою
 	if pair == "USDTUAH" { 
 		return fmt.Sprintf("%s %s: *₴%.2f* (%s)", emoji, label, currentPrice, trend) 
 	}
@@ -207,7 +208,7 @@ func main() {
 
 	go startPriceAlerts(bot)
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintf(w, "Bot is alive!") })
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintf(w, "✅ Бот працює!") })
 	go http.ListenAndServe(":"+os.Getenv("PORT"), nil)
 
 	u := tgbotapi.NewUpdate(0)
