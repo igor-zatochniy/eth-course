@@ -23,7 +23,7 @@ var messages = map[string]map[string]string{
 	"ua": {
 		"welcome":    "Вітаю! 🖖 Твій крипто-асистент уже на зв’язку! ⚡️\n\nХочеш тримати руку на пульсі ринку? Я допоможу!\n\n🔹 Live-курси: BTC, ETH, USDT за лічені секунди.\n🔹 Smart-сповіщення: Сам обирай, як часто отримувати апдейти (1–24 год).\n🔹 UAH-маркет: Слідкуй за реальним курсом USDT до гривні.\n🔹 Stability: Стабільна робота та збереження твоїх пресетів.\n\n🔥 Не гай часу! Тисни **/subscribe** та отримуй профіт від актуальної інформації!",
 		"subscribe":  "✅ Підписка активована! Частота: 1 год. Змінити: /interval",
-		"unsubscribe": "❌ Ви відписалися від розсилки.",
+		"unsubscribe": "❌ Ви відписалися від розсилки. Налаштування мови збережено.",
 		"price_hdr":  "💰 *Актуальні курси:*",
 		"interval_m": "⚙️ *Оберіть частоту автоматичних повідомлень:*",
 		"interval_set": "✅ Тепер я буду надсилати курс кожні %d %s.",
@@ -39,7 +39,7 @@ var messages = map[string]map[string]string{
 	"en": {
 		"welcome":    "Welcome! 🖖 Your crypto assistant is online! ⚡️\n\nWant to keep your finger on the pulse of the market? I'll help!\n\n🔹 Live rates: BTC, ETH, USDT in seconds.\n🔹 Smart alerts: Choose frequency (1 min – 24h).\n🔹 UAH market: Follow the real USDT to UAH rate.\n🔹 Stability: Stable operation and saving your presets.\n\n🔥 Don't waste time! Press **/subscribe** and profit from up-to-date information!",
 		"subscribe":  "✅ Subscription activated! Frequency: 1h. Change: /interval",
-		"unsubscribe": "❌ You have unsubscribed.",
+		"unsubscribe": "❌ You have unsubscribed. Language settings saved.",
 		"price_hdr":  "💰 *Current rates:*",
 		"interval_m": "⚙️ *Choose alert frequency:*",
 		"interval_set": "✅ Now I will send the rates every %d %s.",
@@ -55,7 +55,7 @@ var messages = map[string]map[string]string{
 	"ru": {
 		"welcome":    "Привет! 🖖 Твой крипто-ассистент уже на связи! ⚡️\n\nХочешь держать руку на пульсе рынка? Я помогу!\n\n🔹 Live-курсы: BTC, ETH, USDT за считанные секунды.\n🔹 Smart-уведомления: Сам выбирай, как часто получать апдейты (1–24 ч).\n🔹 UAH-маркет: Следи за реальным курсом USDT к гривне.\n🔹 Stability: Стабильная работа и сохранение твоих пресетов.\n\n🔥 Не теряй времени! Жми **/subscribe** и получай профит от актуальной информации!",
 		"subscribe":  "✅ Подписка активирована! Частота: 1 ч. Изменить: /interval",
-		"unsubscribe": "❌ Вы отписались от рассылки.",
+		"unsubscribe": "❌ Вы отписались от рассылки. Настройки языка сохранены.",
 		"price_hdr":  "💰 *Актуальные курсы:*",
 		"interval_m": "⚙️ *Выберите частоту уведомлений:*",
 		"interval_set": "✅ Теперь я буду присылать курс каждые %d %s.",
@@ -70,7 +70,7 @@ var messages = map[string]map[string]string{
 	},
 }
 
-// --- Динамические клавиатуры ---
+// --- Клавиатуры ---
 
 func getRefreshKeyboard(lang string) *tgbotapi.InlineKeyboardMarkup {
 	text := messages[lang]["btn_upd"]
@@ -110,7 +110,7 @@ var langKeyboard = tgbotapi.NewInlineKeyboardMarkup(
 	),
 )
 
-// --- Логика БД и цен ---
+// --- Логика ---
 
 func getLang(chatID int64) string {
 	var lang string
@@ -150,20 +150,34 @@ func initDB() {
 	var err error
 	db, err = sql.Open("postgres", os.Getenv("DATABASE_URL"))
 	if err != nil { log.Fatal(err) }
-	db.Exec(`CREATE TABLE IF NOT EXISTS subscribers (chat_id BIGINT PRIMARY KEY, interval_minutes INT DEFAULT 60, last_sent TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, language_code TEXT DEFAULT 'ua');`)
+	
+	// Обновленная таблица с колонкой is_subscribed
+	db.Exec(`CREATE TABLE IF NOT EXISTS subscribers (
+		chat_id BIGINT PRIMARY KEY, 
+		interval_minutes INT DEFAULT 60, 
+		last_sent TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, 
+		language_code TEXT DEFAULT 'ua',
+		is_subscribed BOOLEAN DEFAULT FALSE
+	);`)
 	db.Exec(`ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS language_code TEXT DEFAULT 'ua';`)
+	db.Exec(`ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS is_subscribed BOOLEAN DEFAULT FALSE;`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS market_prices (symbol TEXT PRIMARY KEY, price DOUBLE PRECISION);`)
 }
 
 func startPriceAlerts(bot *tgbotapi.BotAPI) {
 	ticker := time.NewTicker(30 * time.Second)
 	for range ticker.C {
-		rows, err := db.Query(`SELECT chat_id, language_code FROM subscribers WHERE last_sent <= NOW() - (interval_minutes * INTERVAL '1 minute') + INTERVAL '10 seconds'`)
+		// КРИТИЧНО: Добавлено условие AND is_subscribed = TRUE
+		rows, err := db.Query(`SELECT chat_id, language_code FROM subscribers 
+                               WHERE is_subscribed = TRUE 
+                               AND last_sent <= NOW() - (interval_minutes * INTERVAL '1 minute') + INTERVAL '10 seconds'`)
 		if err != nil { continue }
+		
 		btc := getPriceWithTrend("BTCUSDT", "BTC")
 		eth := getPriceWithTrend("ETHUSDT", "ETH")
 		usdt := getPriceWithTrend("USDTUAH", "USDT")
 		currentTime := time.Now().In(kyivLoc).Format("15:04")
+
 		for rows.Next() {
 			var id int64
 			var lang string
@@ -200,7 +214,9 @@ func main() {
 			
 			if len(data) > 8 && data[:8] == "setlang_" {
 				newLang := data[8:]
-				db.Exec(`INSERT INTO subscribers (chat_id, language_code) VALUES ($1, $2) ON CONFLICT (chat_id) DO UPDATE SET language_code = $2`, chatID, newLang)
+				// UPSERT: Сохраняем язык, но не меняем статус подписки
+				db.Exec(`INSERT INTO subscribers (chat_id, language_code) VALUES ($1, $2) 
+                         ON CONFLICT (chat_id) DO UPDATE SET language_code = $2`, chatID, newLang)
 				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "OK"))
 				bot.Send(tgbotapi.NewMessage(chatID, messages[newLang]["lang_fixed"]))
 				continue
@@ -239,16 +255,28 @@ func main() {
 		case "start":
 			msg := tgbotapi.NewMessage(chatID, messages[lang]["welcome"])
 			msg.ParseMode = "Markdown"; bot.Send(msg)
+
 		case "language":
 			msg := tgbotapi.NewMessage(chatID, messages[lang]["lang_sel"])
 			msg.ReplyMarkup = langKeyboard; bot.Send(msg)
+
 		case "subscribe":
-			db.Exec(`INSERT INTO subscribers (chat_id, interval_minutes, last_sent, language_code) VALUES ($1, 60, NOW(), 'ua') ON CONFLICT (chat_id) DO UPDATE SET last_sent = NOW()`, chatID)
+			// UPSERT: Активируем подписку (is_subscribed = TRUE)
+			db.Exec(`INSERT INTO subscribers (chat_id, interval_minutes, last_sent, language_code, is_subscribed) 
+                     VALUES ($1, 60, NOW(), 'ua', TRUE) 
+                     ON CONFLICT (chat_id) DO UPDATE SET is_subscribed = TRUE, last_sent = NOW()`, chatID)
 			bot.Send(tgbotapi.NewMessage(chatID, messages[lang]["subscribe"]))
+
+		case "unsubscribe":
+			// ВАЖНО: Больше не удаляем строку, а просто выключаем флаг
+			db.Exec("UPDATE subscribers SET is_subscribed = FALSE WHERE chat_id = $1", chatID)
+			bot.Send(tgbotapi.NewMessage(chatID, messages[lang]["unsubscribe"]))
+
 		case "interval":
 			msg := tgbotapi.NewMessage(chatID, messages[lang]["interval_m"])
 			msg.ParseMode = "Markdown"; msg.ReplyMarkup = getIntervalKeyboard(lang)
 			bot.Send(msg)
+
 		case "price":
 			btc := getPriceWithTrend("BTCUSDT", "BTC")
 			eth := getPriceWithTrend("ETHUSDT", "ETH")
