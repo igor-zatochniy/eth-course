@@ -43,29 +43,59 @@ type BinancePrice struct {
 	Price  string `json:"price"`
 }
 
-// Функція отримання курсу з округленням до 2 знаків
-func getPrice(pair string) (string, error) {
+// Функція отримує чисту ціну (float64) для розрахунків
+func getRawPrice(pair string) (float64, error) {
 	url := fmt.Sprintf("https://api.binance.com/api/v3/ticker/price?symbol=%s", pair)
 	client := http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
-		return "", err
+		return 0, err
 	}
 	defer resp.Body.Close()
 
 	var data BinancePrice
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return "", err
+		return 0, err
 	}
 
-	priceFloat, err := strconv.ParseFloat(data.Price, 64)
-	if err != nil {
-		return data.Price, nil
-	}
-	return fmt.Sprintf("%.2f", priceFloat), nil
+	return strconv.ParseFloat(data.Price, 64)
 }
 
-// Ініціалізація та оновлення структури БД
+// Головна функція для формування рядка з емодзі та відсотками
+func getPriceWithTrend(pair string, label string, currency string) string {
+	currentPrice, err := getRawPrice(pair)
+	if err != nil {
+		return fmt.Sprintf("⚪️ %s: помилка зв'язку", label)
+	}
+
+	var lastPrice float64
+	// Шукаємо попередню ціну в БД
+	err = db.QueryRow("SELECT price FROM market_prices WHERE symbol = $1", pair).Scan(&lastPrice)
+
+	emoji := "⚪️"
+	trend := "0.00%"
+
+	if err == nil && lastPrice > 0 {
+		diffPercent := ((currentPrice - lastPrice) / lastPrice) * 100
+		if diffPercent > 0.01 {
+			emoji = "🟢"
+			trend = fmt.Sprintf("+%.2f%%", diffPercent)
+		} else if diffPercent < -0.01 {
+			emoji = "🔴"
+			trend = fmt.Sprintf("%.2f%%", diffPercent)
+		}
+	}
+
+	// Оновлюємо ціну в базі для наступного порівняння
+	db.Exec(`INSERT INTO market_prices (symbol, price) VALUES ($1, $2) 
+	         ON CONFLICT (symbol) DO UPDATE SET price = EXCLUDED.price`, pair, currentPrice)
+
+	if currency == "USD" {
+		return fmt.Sprintf("%s %s: *$%.2f* (%s)", emoji, label, currentPrice, trend)
+	}
+	return fmt.Sprintf("%s %s: *%.2f UAH* (%s)", emoji, label, currentPrice, trend)
+}
+
 func initDB() {
 	var err error
 	connStr := os.Getenv("DATABASE_URL")
@@ -73,35 +103,36 @@ func initDB() {
 	if err != nil {
 		log.Fatal("Помилка БД:", err)
 	}
-	db.Exec(`CREATE TABLE IF NOT EXISTS subscribers (chat_id BIGINT PRIMARY KEY);`)
+	// Таблиця підписників
+	db.Exec(`CREATE TABLE IF NOT EXISTS subscribers (chat_id BIGINT PRIMARY KEY, interval_hours INT DEFAULT 1, last_sent TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP);`)
 	db.Exec(`ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS interval_hours INT DEFAULT 1;`)
 	db.Exec(`ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS last_sent TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;`)
+	
+	// Таблиця для збереження останніх цін (для трендів)
+	db.Exec(`CREATE TABLE IF NOT EXISTS market_prices (symbol TEXT PRIMARY KEY, price DOUBLE PRECISION);`)
+	
 	log.Println("✅ База даних готова.")
 }
 
-// Автоматична розсилка за індивідуальними інтервалами
 func startPriceAlerts(bot *tgbotapi.BotAPI) {
 	ticker := time.NewTicker(1 * time.Hour)
 	for range ticker.C {
-		rows, err := db.Query(`
-			SELECT chat_id, interval_hours FROM subscribers 
-			WHERE last_sent <= NOW() - (interval_hours * INTERVAL '1 hour')
-		`)
+		rows, err := db.Query(`SELECT chat_id FROM subscribers WHERE last_sent <= NOW() - (interval_hours * INTERVAL '1 hour')`)
 		if err != nil {
 			log.Println("Помилка розсилки:", err)
 			continue
 		}
 
-		btc, _ := getPrice("BTCUSDT")
-		eth, _ := getPrice("ETHUSDT")
-		usdt, _ := getPrice("USDTUAH")
+		btc := getPriceWithTrend("BTCUSDT", "BTC", "USD")
+		eth := getPriceWithTrend("ETHUSDT", "ETH", "USD")
+		usdt := getPriceWithTrend("USDTUAH", "USDT", "UAH")
 		currentTime := time.Now().In(kyivLoc).Format("15:04")
-		text := fmt.Sprintf("🕒 *Планове оновлення (%s)*\n\n🟠 BTC: *$%s*\n🔹 ETH: *$%s*\n💵 USDT: *%s UAH*", currentTime, btc, eth, usdt)
+		
+		text := fmt.Sprintf("🕒 *Планове оновлення (%s)*\n\n%s\n%s\n%s\n\n_Порівняно з попереднім запитом_", currentTime, btc, eth, usdt)
 
 		for rows.Next() {
 			var id int64
-			var interval int
-			if err := rows.Scan(&id, &interval); err == nil {
+			if err := rows.Scan(&id); err == nil {
 				msg := tgbotapi.NewMessage(id, text)
 				msg.ParseMode = "Markdown"
 				msg.ReplyMarkup = refreshKeyboard
@@ -122,7 +153,6 @@ func main() {
 		log.Panic("Помилка авторизації:", err)
 	}
 
-	// Налаштування меню команд
 	commands := []tgbotapi.BotCommand{
 		{Command: "start", Description: "Вітання та функції"},
 		{Command: "price", Description: "Актуальні курси"},
@@ -134,7 +164,6 @@ func main() {
 
 	go startPriceAlerts(bot)
 
-	// Health Check для Koyeb
 	go func() {
 		port := os.Getenv("PORT")
 		if port == "" { port = "8000" }
@@ -158,11 +187,12 @@ func main() {
 			}
 
 			if data == "refresh_price" {
-				btc, _ := getPrice("BTCUSDT")
-				eth, _ := getPrice("ETHUSDT")
-				usdt, _ := getPrice("USDTUAH")
+				btc := getPriceWithTrend("BTCUSDT", "BTC", "USD")
+				eth := getPriceWithTrend("ETHUSDT", "ETH", "USD")
+				usdt := getPriceWithTrend("USDTUAH", "USDT", "UAH")
 				t := time.Now().In(kyivLoc).Format("15:04:05")
-				newText := fmt.Sprintf("🕒 *Оновлено о %s (Київ)*\n\n🟠 BTC: *$%s*\n🔹 ETH: *$%s*\n💵 USDT: *%s UAH*", t, btc, eth, usdt)
+				
+				newText := fmt.Sprintf("🕒 *Оновлено о %s (Київ)*\n\n%s\n%s\n%s\n\n_Динаміка зафіксована_", t, btc, eth, usdt)
 				edit := tgbotapi.NewEditMessageText(chatID, update.CallbackQuery.Message.MessageID, newText)
 				edit.ParseMode = "Markdown"
 				edit.ReplyMarkup = &refreshKeyboard
@@ -177,37 +207,35 @@ func main() {
 
 		switch update.Message.Command() {
 		case "start":
-			welcomeText := "Вітаю! 🖖 Твій крипто-асистент уже на зв’язку! ⚡️\n\n" + // Додано подвійний \n
+			welcomeText := "Вітаю! 🖖 Твій крипто-асистент уже на зв’язку! ⚡️\n\n" +
 				"Хочеш тримати руку на пульсі ринку? Я допоможу!\n\n" +
-				"🔹 *Live-курси:* BTC, ETH, USDT за лічені секунди.\n" +
-				"🔹 *Smart-сповіщення:* Сам обирай, як часто отримувати апдейти (1–24 год).\n" +
-				"🔹 *UAH-маркет:* Слідкуй за реальним курсом USDT до гривні.\n" +
-				"🔹 *Stability:* Стабільна робота та збереження твоїх пресетів.\n\n" +
-				"🔥 Не гай часу! Тисни **/subscribe** та отримуй профіт від актуальної інформації!"
-			
+				"🔹 *Live-курси:* BTC, ETH, USDT з індикаторами росту.\n" +
+				"🔹 *Smart-сповіщення:* Сам обирай частоту (1–24 год).\n" +
+				"🔹 *UAH-маркет:* USDT до гривні.\n\n" +
+				"🔥 Не гай часу! Тисни **/subscribe**!"
 			msg := tgbotapi.NewMessage(chatID, welcomeText)
 			msg.ParseMode = "Markdown"
 			bot.Send(msg)
 
 		case "subscribe":
 			db.Exec("INSERT INTO subscribers (chat_id, interval_hours, last_sent) VALUES ($1, 1, NOW()) ON CONFLICT (chat_id) DO UPDATE SET last_sent = NOW()", chatID)
-			bot.Send(tgbotapi.NewMessage(chatID, "✅ Підписка активована! Частота за замовчуванням — 1 год. Змінити: /interval"))
+			bot.Send(tgbotapi.NewMessage(chatID, "✅ Підписка активована!"))
 
 		case "unsubscribe":
 			db.Exec("DELETE FROM subscribers WHERE chat_id = $1", chatID)
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Ви відписалися від розсилки."))
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ Ви відписалися."))
 
 		case "interval":
-			msg := tgbotapi.NewMessage(chatID, "⚙️ *Оберіть частоту автоматичних повідомлень:*")
+			msg := tgbotapi.NewMessage(chatID, "⚙️ *Оберіть частоту:*")
 			msg.ParseMode = "Markdown"
 			msg.ReplyMarkup = intervalKeyboard
 			bot.Send(msg)
 
 		case "price":
-			btc, _ := getPrice("BTCUSDT")
-			eth, _ := getPrice("ETHUSDT")
-			usdt, _ := getPrice("USDTUAH")
-			text := fmt.Sprintf("💰 *Актуальні курси:*\n\n🟠 BTC: *$%s*\n🔹 ETH: *$%s*\n💵 USDT: *%s UAH*", btc, eth, usdt)
+			btc := getPriceWithTrend("BTCUSDT", "BTC", "USD")
+			eth := getPriceWithTrend("ETHUSDT", "ETH", "USD")
+			usdt := getPriceWithTrend("USDTUAH", "USDT", "UAH")
+			text := fmt.Sprintf("💰 *Актуальні курси:*\n\n%s\n%s\n%s", btc, eth, usdt)
 			msg := tgbotapi.NewMessage(chatID, text)
 			msg.ParseMode = "Markdown"
 			msg.ReplyMarkup = refreshKeyboard
