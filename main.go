@@ -26,6 +26,7 @@ var messages = map[string]map[string]string{
 		"unsubscribe": "❌ Ви відписалися від розсилки.",
 		"price_hdr":  "💰 *Актуальні курси:*",
 		"interval_m": "⚙️ *Оберіть частоту автоматичних повідомлень:*",
+		"interval_set": "✅ Тепер я буду надсилати курс кожні %d %s.",
 		"lang_sel":   "🌍 *Оберіть мову:*",
 		"lang_fixed": "✅ Мову змінено на Українську!",
 		"updated":    "🕒 *Оновлено о %s (Київ)*",
@@ -41,6 +42,7 @@ var messages = map[string]map[string]string{
 		"unsubscribe": "❌ You have unsubscribed.",
 		"price_hdr":  "💰 *Current rates:*",
 		"interval_m": "⚙️ *Choose alert frequency:*",
+		"interval_set": "✅ Now I will send the rates every %d %s.",
 		"lang_sel":   "🌍 *Select your language:*",
 		"lang_fixed": "✅ Language changed to English!",
 		"updated":    "🕒 *Updated at %s (Kyiv)*",
@@ -56,6 +58,7 @@ var messages = map[string]map[string]string{
 		"unsubscribe": "❌ Вы отписались от рассылки.",
 		"price_hdr":  "💰 *Актуальные курсы:*",
 		"interval_m": "⚙️ *Выберите частоту уведомлений:*",
+		"interval_set": "✅ Теперь я буду присылать курс каждые %d %s.",
 		"lang_sel":   "🌍 *Выберите язык:*",
 		"lang_fixed": "✅ Язык изменен на Русский!",
 		"updated":    "🕒 *Обновлено в %s (Киев)*",
@@ -67,7 +70,7 @@ var messages = map[string]map[string]string{
 	},
 }
 
-// --- Вспомогательные функции ---
+// --- Динамические клавиатуры ---
 
 func getRefreshKeyboard(lang string) *tgbotapi.InlineKeyboardMarkup {
 	text := messages[lang]["btn_upd"]
@@ -75,6 +78,28 @@ func getRefreshKeyboard(lang string) *tgbotapi.InlineKeyboardMarkup {
 		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(text, "refresh_price")),
 	)
 	return &kb
+}
+
+func getIntervalKeyboard(lang string) tgbotapi.InlineKeyboardMarkup {
+	m := messages[lang]["unit_m"]
+	h := messages[lang]["unit_h"]
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("1 "+m, "int_1"),
+			tgbotapi.NewInlineKeyboardButtonData("5 "+m, "int_5"),
+			tgbotapi.NewInlineKeyboardButtonData("10 "+m, "int_10"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("15 "+m, "int_15"),
+			tgbotapi.NewInlineKeyboardButtonData("30 "+m, "int_30"),
+			tgbotapi.NewInlineKeyboardButtonData("1 "+h, "int_60"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("3 "+h, "int_180"),
+			tgbotapi.NewInlineKeyboardButtonData("6 "+h, "int_360"),
+			tgbotapi.NewInlineKeyboardButtonData("12 "+h, "int_720"),
+		),
+	)
 }
 
 var langKeyboard = tgbotapi.NewInlineKeyboardMarkup(
@@ -85,30 +110,12 @@ var langKeyboard = tgbotapi.NewInlineKeyboardMarkup(
 	),
 )
 
-var intervalKeyboard = tgbotapi.NewInlineKeyboardMarkup(
-	tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("1 хв", "int_1"),
-		tgbotapi.NewInlineKeyboardButtonData("5 хв", "int_5"),
-		tgbotapi.NewInlineKeyboardButtonData("10 хв", "int_10"),
-	),
-	tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("15 хв", "int_15"),
-		tgbotapi.NewInlineKeyboardButtonData("30 хв", "int_30"),
-		tgbotapi.NewInlineKeyboardButtonData("1 год", "int_60"),
-	),
-	tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("3 год", "int_180"),
-		tgbotapi.NewInlineKeyboardButtonData("6 год", "int_360"),
-		tgbotapi.NewInlineKeyboardButtonData("12 год", "int_720"),
-	),
-)
+// --- Логика БД и цен ---
 
 func getLang(chatID int64) string {
 	var lang string
 	err := db.QueryRow("SELECT language_code FROM subscribers WHERE chat_id = $1", chatID).Scan(&lang)
-	if err != nil {
-		return "ua" // По умолчанию
-	}
+	if err != nil { return "ua" }
 	return lang
 }
 
@@ -119,7 +126,7 @@ func getPriceWithTrend(pair string, label string) string {
 	if err != nil { return fmt.Sprintf("⚪️ %s: err", label) }
 	defer resp.Body.Close()
 
-	var data BinancePrice
+	var data struct { Price string `json:"price"` }
 	json.NewDecoder(resp.Body).Decode(&data)
 	currentPrice, _ := strconv.ParseFloat(data.Price, 64)
 
@@ -133,32 +140,17 @@ func getPriceWithTrend(pair string, label string) string {
 		if diff > 0.01 { emoji = "🟢"; trend = fmt.Sprintf("+%.2f%%", diff) }
 		if diff < -0.01 { emoji = "🔴"; trend = fmt.Sprintf("%.2f%%", diff) }
 	}
-
 	db.Exec(`INSERT INTO market_prices (symbol, price) VALUES ($1, $2) ON CONFLICT (symbol) DO UPDATE SET price = EXCLUDED.price`, pair, currentPrice)
 
-	if pair == "USDTUAH" { 
-		return fmt.Sprintf("%s %s: *₴%.2f* (%s)", emoji, label, currentPrice, trend) 
-	}
+	if pair == "USDTUAH" { return fmt.Sprintf("%s %s: *₴%.2f* (%s)", emoji, label, currentPrice, trend) }
 	return fmt.Sprintf("%s %s: *$%.2f* (%s)", emoji, label, currentPrice, trend)
-}
-
-type BinancePrice struct {
-	Symbol string `json:"symbol"`
-	Price  string `json:"price"`
 }
 
 func initDB() {
 	var err error
-	connStr := os.Getenv("DATABASE_URL")
-	db, err = sql.Open("postgres", connStr)
-	if err != nil { log.Fatal("DB Error:", err) }
-
-	db.Exec(`CREATE TABLE IF NOT EXISTS subscribers (
-		chat_id BIGINT PRIMARY KEY, 
-		interval_minutes INT DEFAULT 60, 
-		last_sent TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-		language_code TEXT DEFAULT 'ua'
-	);`)
+	db, err = sql.Open("postgres", os.Getenv("DATABASE_URL"))
+	if err != nil { log.Fatal(err) }
+	db.Exec(`CREATE TABLE IF NOT EXISTS subscribers (chat_id BIGINT PRIMARY KEY, interval_minutes INT DEFAULT 60, last_sent TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, language_code TEXT DEFAULT 'ua');`)
 	db.Exec(`ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS language_code TEXT DEFAULT 'ua';`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS market_prices (symbol TEXT PRIMARY KEY, price DOUBLE PRECISION);`)
 }
@@ -168,20 +160,17 @@ func startPriceAlerts(bot *tgbotapi.BotAPI) {
 	for range ticker.C {
 		rows, err := db.Query(`SELECT chat_id, language_code FROM subscribers WHERE last_sent <= NOW() - (interval_minutes * INTERVAL '1 minute') + INTERVAL '10 seconds'`)
 		if err != nil { continue }
-
 		btc := getPriceWithTrend("BTCUSDT", "BTC")
 		eth := getPriceWithTrend("ETHUSDT", "ETH")
 		usdt := getPriceWithTrend("USDTUAH", "USDT")
 		currentTime := time.Now().In(kyivLoc).Format("15:04")
-
 		for rows.Next() {
 			var id int64
 			var lang string
 			if err := rows.Scan(&id, &lang); err == nil {
 				text := fmt.Sprintf(messages[lang]["alert_hdr"]+"\n\n%s\n%s\n%s\n\n_%s_", currentTime, btc, eth, usdt, messages[lang]["dynamics"])
 				msg := tgbotapi.NewMessage(id, text)
-				msg.ParseMode = "Markdown"
-				msg.ReplyMarkup = getRefreshKeyboard(lang)
+				msg.ParseMode = "Markdown"; msg.ReplyMarkup = getRefreshKeyboard(lang)
 				bot.Send(msg)
 				db.Exec("UPDATE subscribers SET last_sent = NOW() WHERE chat_id = $1", id)
 			}
@@ -193,22 +182,11 @@ func startPriceAlerts(bot *tgbotapi.BotAPI) {
 func main() {
 	_ = godotenv.Load()
 	initDB()
-	bot, err := tgbotapi.NewBotAPI(os.Getenv("TELEGRAM_APITOKEN"))
-	if err != nil { log.Panic(err) }
-
-	commands := []tgbotapi.BotCommand{
-		{Command: "start", Description: "Start/Menu"},
-		{Command: "language", Description: "Change language"},
-		{Command: "price", Description: "Check prices"},
-		{Command: "interval", Description: "Set frequency"},
-		{Command: "subscribe", Description: "Subscribe"},
-		{Command: "unsubscribe", Description: "Unsubscribe"},
-	}
-	bot.Request(tgbotapi.NewSetMyCommands(commands...))
+	bot, _ := tgbotapi.NewBotAPI(os.Getenv("TELEGRAM_APITOKEN"))
 
 	go startPriceAlerts(bot)
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintf(w, "✅ Bot is working!") })
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintf(w, "✅ Бот працює!") })
 	go http.ListenAndServe(":"+os.Getenv("PORT"), nil)
 
 	u := tgbotapi.NewUpdate(0)
@@ -220,13 +198,9 @@ func main() {
 			data := update.CallbackQuery.Data
 			chatID := update.CallbackQuery.Message.Chat.ID
 			
-			// ОБРАБОТКА СМЕНЫ ЯЗЫКА (Используем UPSERT)
 			if len(data) > 8 && data[:8] == "setlang_" {
 				newLang := data[8:]
-				db.Exec(`INSERT INTO subscribers (chat_id, language_code) 
-						 VALUES ($1, $2) 
-						 ON CONFLICT (chat_id) DO UPDATE SET language_code = $2`, chatID, newLang)
-				
+				db.Exec(`INSERT INTO subscribers (chat_id, language_code) VALUES ($1, $2) ON CONFLICT (chat_id) DO UPDATE SET language_code = $2`, chatID, newLang)
 				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "OK"))
 				bot.Send(tgbotapi.NewMessage(chatID, messages[newLang]["lang_fixed"]))
 				continue
@@ -240,7 +214,7 @@ func main() {
 				unit := messages[lang]["unit_m"]; val := minutes
 				if minutes >= 60 { unit = messages[lang]["unit_h"]; val = minutes/60 }
 				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "OK"))
-				bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ %d %s", val, unit)))
+				bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf(messages[lang]["interval_set"], val, unit)))
 				continue
 			}
 
@@ -250,12 +224,9 @@ func main() {
 				usdt := getPriceWithTrend("USDTUAH", "USDT")
 				t := time.Now().In(kyivLoc).Format("15:04:05")
 				text := fmt.Sprintf(messages[lang]["updated"]+"\n\n%s\n%s\n%s\n\n_%s_", t, btc, eth, usdt, messages[lang]["dynamics"])
-				
 				edit := tgbotapi.NewEditMessageText(chatID, update.CallbackQuery.Message.MessageID, text)
-				edit.ParseMode = "Markdown"
-				edit.ReplyMarkup = getRefreshKeyboard(lang)
-				bot.Send(edit)
-				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "OK"))
+				edit.ParseMode = "Markdown"; edit.ReplyMarkup = getRefreshKeyboard(lang)
+				bot.Send(edit); bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "OK"))
 			}
 			continue
 		}
@@ -267,34 +238,24 @@ func main() {
 		switch update.Message.Command() {
 		case "start":
 			msg := tgbotapi.NewMessage(chatID, messages[lang]["welcome"])
-			msg.ParseMode = "Markdown"
-			bot.Send(msg)
+			msg.ParseMode = "Markdown"; bot.Send(msg)
 		case "language":
 			msg := tgbotapi.NewMessage(chatID, messages[lang]["lang_sel"])
-			msg.ReplyMarkup = langKeyboard
-			bot.Send(msg)
+			msg.ReplyMarkup = langKeyboard; bot.Send(msg)
 		case "subscribe":
-			// Используем UPSERT, чтобы не перезаписывать язык при подписке
-			db.Exec(`INSERT INTO subscribers (chat_id, interval_minutes, last_sent, language_code) 
-					 VALUES ($1, 60, NOW(), 'ua') 
-					 ON CONFLICT (chat_id) DO UPDATE SET last_sent = NOW()`, chatID)
+			db.Exec(`INSERT INTO subscribers (chat_id, interval_minutes, last_sent, language_code) VALUES ($1, 60, NOW(), 'ua') ON CONFLICT (chat_id) DO UPDATE SET last_sent = NOW()`, chatID)
 			bot.Send(tgbotapi.NewMessage(chatID, messages[lang]["subscribe"]))
-		case "unsubscribe":
-			db.Exec("DELETE FROM subscribers WHERE chat_id = $1", chatID)
-			bot.Send(tgbotapi.NewMessage(chatID, messages[lang]["unsubscribe"]))
 		case "interval":
 			msg := tgbotapi.NewMessage(chatID, messages[lang]["interval_m"])
-			msg.ParseMode = "Markdown"; msg.ReplyMarkup = intervalKeyboard
+			msg.ParseMode = "Markdown"; msg.ReplyMarkup = getIntervalKeyboard(lang)
 			bot.Send(msg)
 		case "price":
 			btc := getPriceWithTrend("BTCUSDT", "BTC")
 			eth := getPriceWithTrend("ETHUSDT", "ETH")
 			usdt := getPriceWithTrend("USDTUAH", "USDT")
 			text := fmt.Sprintf(messages[lang]["price_hdr"]+"\n\n%s\n%s\n%s", btc, eth, usdt)
-			msg := tgbotapi.NewMessage(chatID, text)
-			msg.ParseMode = "Markdown"
-			msg.ReplyMarkup = getRefreshKeyboard(lang)
-			bot.Send(msg)
+			msg := tgbotapi.NewMessage(chatID, text); msg.ParseMode = "Markdown"
+			msg.ReplyMarkup = getRefreshKeyboard(lang); bot.Send(msg)
 		}
 	}
 }
