@@ -182,7 +182,9 @@ func main() {
 				t := time.Now().In(kyivLoc).Format("15:04:05")
 				
 				newText := fmt.Sprintf("🕒 *Оновлено о %s (Київ)*\n\n%s\n%s\n%s\n\n_Динаміка зафіксована_", t, btc, eth, usdt)
-				edit := tgbotapi.NewEditMessageText(chatID, update.CallbackQuery.Message.ID, newText)
+				
+				// ВИПРАВЛЕНО: MessageID замість ID
+				edit := tgbotapi.NewEditMessageText(chatID, update.CallbackQuery.Message.MessageID, newText)
 				edit.ParseMode = "Markdown"
 				edit.ReplyMarkup = &refreshKeyboard
 				bot.Send(edit)
