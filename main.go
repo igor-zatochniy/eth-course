@@ -18,14 +18,13 @@ import (
 var db *sql.DB
 var kyivLoc = time.FixedZone("Kyiv", 2*60*60)
 
-// Клавіатура для оновлення
+// Клавіатури
 var refreshKeyboard = tgbotapi.NewInlineKeyboardMarkup(
 	tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData("🔄 Оновити зараз", "refresh_price"),
 	),
 )
 
-// Клавіатура вибору інтервалу
 var intervalKeyboard = tgbotapi.NewInlineKeyboardMarkup(
 	tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData("1 год", "int_1"),
@@ -43,7 +42,6 @@ type BinancePrice struct {
 	Price  string `json:"price"`
 }
 
-// Функція отримання курсу з округленням
 func getPrice(pair string) (string, error) {
 	url := fmt.Sprintf("https://api.binance.com/api/v3/ticker/price?symbol=%s", pair)
 	client := http.Client{Timeout: 10 * time.Second}
@@ -58,14 +56,10 @@ func getPrice(pair string) (string, error) {
 		return "", err
 	}
 
-	priceFloat, err := strconv.ParseFloat(data.Price, 64)
-	if err != nil {
-		return data.Price, nil
-	}
+	priceFloat, _ := strconv.ParseFloat(data.Price, 64)
 	return fmt.Sprintf("%.2f", priceFloat), nil
 }
 
-// Ініціалізація та оновлення структури БД
 func initDB() {
 	var err error
 	connStr := os.Getenv("DATABASE_URL")
@@ -73,28 +67,21 @@ func initDB() {
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	// Створюємо таблицю, якщо її немає
 	db.Exec(`CREATE TABLE IF NOT EXISTS subscribers (chat_id BIGINT PRIMARY KEY);`)
-
-	// Додаємо нові колонки, якщо вони ще не існують
 	db.Exec(`ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS interval_hours INT DEFAULT 1;`)
 	db.Exec(`ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS last_sent TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;`)
-
-	log.Println("✅ База даних готова та оновлена.")
+	log.Println("✅ База даних готова.")
 }
 
-// Розумна розсилка за індивідуальни інтервалами
 func startPriceAlerts(bot *tgbotapi.BotAPI) {
-	ticker := time.NewTicker(1 * time.Hour) // Перевірка бази щогодини
+	ticker := time.NewTicker(1 * time.Hour)
 	for range ticker.C {
-		// Вибираємо користувачів, яким час надсилати повідомлення
 		rows, err := db.Query(`
 			SELECT chat_id, interval_hours FROM subscribers 
 			WHERE last_sent <= NOW() - (interval_hours * INTERVAL '1 hour')
 		`)
 		if err != nil {
-			log.Println("Помилка запиту розсилки:", err)
+			log.Println("Помилка розсилки:", err)
 			continue
 		}
 
@@ -113,8 +100,6 @@ func startPriceAlerts(bot *tgbotapi.BotAPI) {
 				msg.ParseMode = "Markdown"
 				msg.ReplyMarkup = refreshKeyboard
 				bot.Send(msg)
-
-				// Оновлюємо час останньої відправки в БД
 				db.Exec("UPDATE subscribers SET last_sent = NOW() WHERE chat_id = $1", id)
 			}
 		}
@@ -131,17 +116,26 @@ func main() {
 		log.Panic(err)
 	}
 
+	// --- ДОДАВАННЯ КНОПКИ "МЕНЮ" ---
+	commands := []tgbotapi.BotCommand{
+		{Command: "start", Description: "Запустити бота та показати меню"},
+		{Command: "price", Description: "Дізнатися актуальний курс прямо зараз"},
+		{Command: "subscribe", Description: "Підписатися на автоматичну розсилку"},
+		{Command: "interval", Description: "Налаштувати частоту сповіщень"},
+		{Command: "unsubscribe", Description: "Відписатися від розсилки"},
+	}
+	
+	cfg := tgbotapi.NewSetMyCommands(commands...)
+	bot.Request(cfg)
+	// -------------------------------
+
 	log.Printf("Бот запущений: %s", bot.Self.UserName)
 
 	go startPriceAlerts(bot)
 
-	// Health Check для Koyeb
 	go func() {
 		port := os.Getenv("PORT")
 		if port == "" { port = "8000" }
-		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprintf(w, "Крипто-бот працює!")
-		})
 		http.ListenAndServe(":"+port, nil)
 	}()
 
@@ -150,29 +144,23 @@ func main() {
 	updates := bot.GetUpdatesChan(u)
 
 	for update := range updates {
-		// Обробка натискань на кнопки
 		if update.CallbackQuery != nil {
 			data := update.CallbackQuery.Data
 			chatID := update.CallbackQuery.Message.Chat.ID
 
-			// Зміна інтервалу
 			if len(data) > 4 && data[:4] == "int_" {
 				hours, _ := strconv.Atoi(data[4:])
 				db.Exec("UPDATE subscribers SET interval_hours = $1, last_sent = NOW() WHERE chat_id = $2", hours, chatID)
-				
 				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Інтервал змінено!"))
 				bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Тепер я буду надсилати курс кожні %d год.", hours)))
 			}
 
-			// Кнопка оновити зараз
 			if data == "refresh_price" {
 				btc, _ := getPrice("BTCUSDT")
 				eth, _ := getPrice("ETHUSDT")
 				usdt, _ := getPrice("USDTUAH")
 				t := time.Now().In(kyivLoc).Format("15:04:05")
-				
 				newText := fmt.Sprintf("🕒 *Оновлено о %s (Київ)*\n\n🟠 BTC: *$%s*\n🔹 ETH: *$%s*\n💵 USDT: *%s UAH*", t, btc, eth, usdt)
-				
 				edit := tgbotapi.NewEditMessageText(chatID, update.CallbackQuery.Message.MessageID, newText)
 				edit.ParseMode = "Markdown"
 				edit.ReplyMarkup = &refreshKeyboard
@@ -187,21 +175,21 @@ func main() {
 
 		switch update.Message.Command() {
 		case "start":
-			text := "👋 *Вітаю!*\nЯ допоможу стежити за крипто-ринком.\n\n" +
-				"/subscribe — підписатися на розсилку\n" +
-				"/interval — обрати частоту (1-24 год)\n" +
-				"/price — отримати курс зараз"
+			text := "👋 *Вітаю!*\nВиберіть команду в меню або натисніть /subscribe, щоб почати."
 			msg := tgbotapi.NewMessage(chatID, text)
 			msg.ParseMode = "Markdown"
 			bot.Send(msg)
 
 		case "subscribe":
-			// При підписці ставимо дефолтний 1 годину
 			db.Exec("INSERT INTO subscribers (chat_id, interval_hours, last_sent) VALUES ($1, 1, NOW()) ON CONFLICT (chat_id) DO UPDATE SET last_sent = NOW()", chatID)
-			bot.Send(tgbotapi.NewMessage(chatID, "✅ Підписка активована! Використовуй /interval, щоб змінити частоту (за замовчуванням 1 год)."))
+			bot.Send(tgbotapi.NewMessage(chatID, "✅ Підписка активована! Частота: 1 год. Змінити: /interval"))
+
+		case "unsubscribe":
+			db.Exec("DELETE FROM subscribers WHERE chat_id = $1", chatID)
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ Ви відписалися від розсилки."))
 
 		case "interval":
-			msg := tgbotapi.NewMessage(chatID, "⚙️ *Оберіть, як часто надсилати курс:*")
+			msg := tgbotapi.NewMessage(chatID, "⚙️ *Оберіть частоту повідомлень:*")
 			msg.ParseMode = "Markdown"
 			msg.ReplyMarkup = intervalKeyboard
 			bot.Send(msg)
