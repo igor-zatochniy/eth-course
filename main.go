@@ -132,7 +132,10 @@ func getPriceWithTrend(pair string, label string) string {
 
 	db.Exec(`INSERT INTO market_prices (symbol, price) VALUES ($1, $2) ON CONFLICT (symbol) DO UPDATE SET price = EXCLUDED.price`, pair, currentPrice)
 
-	if pair == "USDTUAH" { return fmt.Sprintf("%s %s: *%.2f UAH* (%s)", emoji, label, currentPrice, trend) }
+	// ЗМІНЕНО: Значок гривні перед сумою
+	if pair == "USDTUAH" { 
+		return fmt.Sprintf("%s %s: *₴%.2f* (%s)", emoji, label, currentPrice, trend) 
+	}
 	return fmt.Sprintf("%s %s: *$%.2f* (%s)", emoji, label, currentPrice, trend)
 }
 
