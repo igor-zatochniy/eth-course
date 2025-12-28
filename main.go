@@ -21,7 +21,7 @@ var kyivLoc = time.FixedZone("Kyiv", 2*60*60)
 // --- СЛОВНИК ПЕРЕКЛАДІВ ---
 var messages = map[string]map[string]string{
 	"ua": {
-		"welcome":    "Вітаю! 🖖 Твій крипто-асистент уже на зв’язку! ⚡️\n\nХочеш тримати руку на пульсі ринку? Я допоможу!\n\n🔹 *Live-курси:* BTC, ETH, USDT за лічені секунди.\n🔹 *Smart-сповіщення:* Сам обирай частоту (1 хв – 24 год).\n🔹 *UAH-маркет:* USDT до гривні.\n\nТисни **/subscribe** та отримуй профіт!",
+		"welcome":    "Вітаю! 🖖 Твій крипто-асистент уже на зв’язку! ⚡️\n\nХочеш тримати руку на пульсі ринку? Я допоможу!\n\n🔹 *Live-курси:* BTC, ETH, USDT за лічені секунди.\n🔹 *Smart-сповіщення:* Сам обирай, як часто отримувати апдейти (1–24 год).\n🔹 *UAH-маркет:* Слідкуй за реальним курсом USDT до гривні.\n🔹 *Stability:* Стабільна робота та збереження твоїх пресетів.\n\n🔥 Не гай часу! Тисни **/subscribe** та отримуй профіт від актуальної інформації!",
 		"subscribe":  "✅ Підписка активована! Частота: 1 год. Змінити: /interval",
 		"unsubscribe": "❌ Ви відписалися від розсилки.",
 		"price_hdr":  "💰 *Актуальні курси:*",
@@ -36,7 +36,7 @@ var messages = map[string]map[string]string{
 		"btn_upd":    "🔄 Оновити",
 	},
 	"en": {
-		"welcome":    "Welcome! 🖖 Your crypto assistant is online! ⚡️\n\nWant to keep your finger on the pulse of the market? I'll help!\n\n🔹 *Live rates:* BTC, ETH, USDT in seconds.\n🔹 *Smart alerts:* Choose frequency (1 min – 24h).\n🔹 *UAH market:* USDT to UAH rate.\n\nPress **/subscribe** and stay updated!",
+		"welcome":    "Welcome! 🖖 Your crypto assistant is online! ⚡️\n\nWant to keep your finger on the pulse of the market? I'll help!\n\n🔹 *Live rates:* BTC, ETH, USDT in seconds.\n🔹 *Smart alerts:* Choose frequency (1 min – 24h).\n🔹 *UAH market:* USDT to UAH rate.\n🔹 *Stability:* Stable work and saved presets.\n\nPress **/subscribe** and stay updated!",
 		"subscribe":  "✅ Subscription activated! Frequency: 1h. Change: /interval",
 		"unsubscribe": "❌ You have unsubscribed.",
 		"price_hdr":  "💰 *Current rates:*",
@@ -51,7 +51,7 @@ var messages = map[string]map[string]string{
 		"btn_upd":    "🔄 Update",
 	},
 	"ru": {
-		"welcome":    "Привет! 🖖 Твой крипто-ассистент на связи! ⚡️\n\nХочешь держать руку на пульсе рынка? Я помогу!\n\n🔹 *Live-курсы:* BTC, ETH, USDT за считанные секунды.\n🔹 *Smart-уведомления:* Выбирай частоту (1 мин – 24 ч).\n🔹 *UAH-маркет:* Курс USDT к гривне.\n\nЖми **/subscribe** и будь в курсе!",
+		"welcome":    "Привет! 🖖 Твой крипто-ассистент на связи! ⚡️\n\nХочешь держать руку на пульсе рынка? Я помогу!\n\n🔹 *Live-курсы:* BTC, ETH, USDT за считанные секунды.\n🔹 *Smart-уведомления:* Выбирай частоту (1 мин – 24 ч).\n🔹 *UAH-маркет:* Курс USDT к гривне.\n🔹 *Stability:* Стабильная работа и сохранение пресетов.\n\nЖми **/subscribe** и будь в курсе!",
 		"subscribe":  "✅ Подписка активирована! Частота: 1 ч. Изменить: /interval",
 		"unsubscribe": "❌ Вы отписались от рассылки.",
 		"price_hdr":  "💰 *Актуальные курсы:*",
@@ -69,7 +69,6 @@ var messages = map[string]map[string]string{
 
 // --- Клавіатури ---
 
-// ВИПРАВЛЕНО: тепер повертає вказівник *tgbotapi.InlineKeyboardMarkup
 func getRefreshKeyboard(lang string) *tgbotapi.InlineKeyboardMarkup {
 	text := messages[lang]["btn_upd"]
 	kb := tgbotapi.NewInlineKeyboardMarkup(
@@ -244,7 +243,6 @@ func main() {
 				
 				edit := tgbotapi.NewEditMessageText(chatID, update.CallbackQuery.Message.MessageID, text)
 				edit.ParseMode = "Markdown"
-				// ВИПРАВЛЕНО: тепер функція повертає правильний тип *InlineKeyboardMarkup
 				edit.ReplyMarkup = getRefreshKeyboard(lang)
 				
 				bot.Send(edit)
@@ -267,7 +265,7 @@ func main() {
 			msg.ReplyMarkup = langKeyboard
 			bot.Send(msg)
 		case "subscribe":
-			db.Exec("INSERT INTO subscribers (chat_id, language_code) VALUES ($1, 'ua') ON CONFLICT (chat_id) DO NOTHING", chatID)
+			db.Exec("INSERT INTO subscribers (chat_id, language_code) VALUES ($1, 'ua') ON CONFLICT (chat_id) DO UPDATE SET language_code = subscribers.language_code", chatID)
 			bot.Send(tgbotapi.NewMessage(chatID, messages[lang]["subscribe"]))
 		case "unsubscribe":
 			db.Exec("DELETE FROM subscribers WHERE chat_id = $1", chatID)
