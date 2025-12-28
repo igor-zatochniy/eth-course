@@ -43,7 +43,7 @@ type BinancePrice struct {
 	Price  string `json:"price"`
 }
 
-// Функція отримання курсу
+// Функція отримання курсу з округленням до 2 знаків
 func getPrice(pair string) (string, error) {
 	url := fmt.Sprintf("https://api.binance.com/api/v3/ticker/price?symbol=%s", pair)
 	client := http.Client{Timeout: 10 * time.Second}
@@ -65,7 +65,7 @@ func getPrice(pair string) (string, error) {
 	return fmt.Sprintf("%.2f", priceFloat), nil
 }
 
-// Ініціалізація БД
+// Ініціалізація та оновлення структури БД
 func initDB() {
 	var err error
 	connStr := os.Getenv("DATABASE_URL")
@@ -79,7 +79,7 @@ func initDB() {
 	log.Println("✅ База даних готова.")
 }
 
-// Розсилка за розкладом
+// Автоматична розсилка за індивідуальними інтервалами
 func startPriceAlerts(bot *tgbotapi.BotAPI) {
 	ticker := time.NewTicker(1 * time.Hour)
 	for range ticker.C {
@@ -122,7 +122,7 @@ func main() {
 		log.Panic("Помилка авторизації:", err)
 	}
 
-	// Команди в меню
+	// Налаштування меню команд
 	commands := []tgbotapi.BotCommand{
 		{Command: "start", Description: "Вітання та функції"},
 		{Command: "price", Description: "Актуальні курси"},
@@ -134,6 +134,7 @@ func main() {
 
 	go startPriceAlerts(bot)
 
+	// Health Check для Koyeb
 	go func() {
 		port := os.Getenv("PORT")
 		if port == "" { port = "8000" }
@@ -176,7 +177,7 @@ func main() {
 
 		switch update.Message.Command() {
 		case "start":
-			welcomeText := "Вітаю! 🖖 Твій крипто-асистент уже на зв’язку! ⚡️\n" +
+			welcomeText := "Вітаю! 🖖 Твій крипто-асистент уже на зв’язку! ⚡️\n\n" + // Додано подвійний \n
 				"Хочеш тримати руку на пульсі ринку? Я допоможу!\n\n" +
 				"🔹 *Live-курси:* BTC, ETH, USDT за лічені секунди.\n" +
 				"🔹 *Smart-сповіщення:* Сам обирай, як часто отримувати апдейти (1–24 год).\n" +
