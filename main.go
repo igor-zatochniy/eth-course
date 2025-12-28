@@ -26,7 +26,6 @@ var refreshKeyboard = tgbotapi.NewInlineKeyboardMarkup(
 	),
 )
 
-// Оновлена клавіатура з хвилинними та годинними інтервалами
 var intervalKeyboard = tgbotapi.NewInlineKeyboardMarkup(
 	tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData("1 хв", "int_1"),
@@ -50,7 +49,7 @@ type BinancePrice struct {
 	Price  string `json:"price"`
 }
 
-// Функція отримує курс та порівнює з минулим для тренду
+// Функція отримує курс, порівнює з минулим і повертає рядок з індикатором
 func getPriceWithTrend(pair string, label string) string {
 	url := fmt.Sprintf("https://api.binance.com/api/v3/ticker/price?symbol=%s", pair)
 	client := http.Client{Timeout: 10 * time.Second}
@@ -65,6 +64,7 @@ func getPriceWithTrend(pair string, label string) string {
 	currentPrice, _ := strconv.ParseFloat(data.Price, 64)
 
 	var lastPrice float64
+	// Отримуємо попередню ціну з БД
 	err = db.QueryRow("SELECT price FROM market_prices WHERE symbol = $1", pair).Scan(&lastPrice)
 
 	emoji := "⚪️"
@@ -81,6 +81,7 @@ func getPriceWithTrend(pair string, label string) string {
 		}
 	}
 
+	// Оновлюємо ціну в базі для наступного порівняння
 	db.Exec(`INSERT INTO market_prices (symbol, price) VALUES ($1, $2) 
 	         ON CONFLICT (symbol) DO UPDATE SET price = EXCLUDED.price`, pair, currentPrice)
 
@@ -98,27 +99,31 @@ func initDB() {
 		log.Fatal("Помилка БД:", err)
 	}
 
+	// Створюємо таблиці та оновлюємо структуру
 	db.Exec(`CREATE TABLE IF NOT EXISTS subscribers (
 		chat_id BIGINT PRIMARY KEY, 
 		interval_minutes INT DEFAULT 60, 
 		last_sent TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 	);`)
-
-	// Додаємо нову колонку для хвилин, якщо її немає (міграція)
 	db.Exec(`ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS interval_minutes INT DEFAULT 60;`)
 	db.Exec(`ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS last_sent TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS market_prices (symbol TEXT PRIMARY KEY, price DOUBLE PRECISION);`)
 	
-	log.Println("✅ База даних готова (хвилинні інтервали активовані).")
+	db.Exec(`CREATE TABLE IF NOT EXISTS market_prices (
+		symbol TEXT PRIMARY KEY, 
+		price DOUBLE PRECISION
+	);`)
+	
+	log.Println("✅ База даних готова.")
 }
 
 func startPriceAlerts(bot *tgbotapi.BotAPI) {
-	// ТЕПЕР ПЕРЕВІРЯЄМО КОЖНУ ХВИЛИНУ
-	ticker := time.NewTicker(1 * time.Minute)
+	// Перевіряємо базу кожні 30 секунд для високої точності таймера
+	ticker := time.NewTicker(30 * time.Second)
 	for range ticker.C {
+		// Використовуємо буфер у 10 секунд для стабільної роботи 1-хвилинного інтервалу
 		rows, err := db.Query(`
 			SELECT chat_id FROM subscribers 
-			WHERE last_sent <= NOW() - (interval_minutes * INTERVAL '1 minute')
+			WHERE last_sent <= NOW() - (interval_minutes * INTERVAL '1 minute') + INTERVAL '10 seconds'
 		`)
 		if err != nil {
 			log.Println("Помилка розсилки:", err)
@@ -166,6 +171,7 @@ func main() {
 
 	go startPriceAlerts(bot)
 
+	// --- ВЕБ-СЕРВЕР ДЛЯ ЗАПОБІГАННЯ 404 ТА SLEEP ---
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "✅ Бот прокинувся і працює!\n")
@@ -187,20 +193,15 @@ func main() {
 			data := update.CallbackQuery.Data
 			chatID := update.CallbackQuery.Message.Chat.ID
 
-			// Обробка нових хвилинних інтервалів
 			if len(data) > 4 && data[:4] == "int_" {
 				minutes, _ := strconv.Atoi(data[4:])
 				db.Exec("UPDATE subscribers SET interval_minutes = $1, last_sent = NOW() WHERE chat_id = $2", minutes, chatID)
 				
-				var unit string
-				if minutes < 60 {
-					unit = fmt.Sprintf("%d хв", minutes)
-				} else {
-					unit = fmt.Sprintf("%d год", minutes/60)
-				}
-				
+				unit := fmt.Sprintf("%d хв", minutes)
+				if minutes >= 60 { unit = fmt.Sprintf("%d год", minutes/60) }
+
 				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "Змінено!"))
-				bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Тепер я буду надсилати курс кожні %s.", unit)))
+				bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ Буду надсилати курс кожні %s.", unit)))
 			}
 
 			if data == "refresh_price" {
@@ -208,7 +209,9 @@ func main() {
 				eth := getPriceWithTrend("ETHUSDT", "ETH")
 				usdt := getPriceWithTrend("USDTUAH", "USDT")
 				t := time.Now().In(kyivLoc).Format("15:04:05")
+				
 				newText := fmt.Sprintf("🕒 *Оновлено о %s (Київ)*\n\n%s\n%s\n%s\n\n_Динаміка зафіксована_", t, btc, eth, usdt)
+				
 				edit := tgbotapi.NewEditMessageText(chatID, update.CallbackQuery.Message.MessageID, newText)
 				edit.ParseMode = "Markdown"
 				edit.ReplyMarkup = &refreshKeyboard
@@ -225,10 +228,11 @@ func main() {
 		case "start":
 			welcomeText := "Вітаю! 🖖 Твій крипто-асистент уже на зв’язку! ⚡️\n\n" +
 				"Хочеш тримати руку на пульсі ринку? Я допоможу!\n\n" +
-				"🔹 *Live-курси:* BTC, ETH, USDT з трендами.\n" +
-				"🔹 *Smart-сповіщення:* Обирай інтервал від 1 хв до 24 год.\n" +
-				"🔹 *UAH-маркет:* Слідкуй за курсом USDT/UAH.\n\n" +
-				"🔥 Не гай часу! Тисни **/subscribe**!"
+				"🔹 *Live-курси:* BTC, ETH, USDT за лічені секунди.\n" +
+				"🔹 *Smart-сповіщення:* Сам обирай, як часто отримувати апдейти (1–24 год).\n" +
+				"🔹 *UAH-маркет:* Слідкуй за реальним курсом USDT до гривні.\n" +
+				"🔹 *Stability:* Стабільна робота та збереження твоїх пресетів.\n\n" +
+				"🔥 Не гай часу! Тисни **/subscribe** та отримуй профіт від актуальної інформації!"
 			
 			msg := tgbotapi.NewMessage(chatID, welcomeText)
 			msg.ParseMode = "Markdown"
@@ -236,11 +240,11 @@ func main() {
 
 		case "subscribe":
 			db.Exec("INSERT INTO subscribers (chat_id, interval_minutes, last_sent) VALUES ($1, 60, NOW()) ON CONFLICT (chat_id) DO UPDATE SET last_sent = NOW()", chatID)
-			bot.Send(tgbotapi.NewMessage(chatID, "✅ Підписка активована! За замовчуванням — 1 год. Змінити: /interval"))
+			bot.Send(tgbotapi.NewMessage(chatID, "✅ Підписка активована! Частота: 1 год. Змінити: /interval"))
 
 		case "unsubscribe":
 			db.Exec("DELETE FROM subscribers WHERE chat_id = $1", chatID)
-			bot.Send(tgbotapi.NewMessage(chatID, "❌ Ви відписалися."))
+			bot.Send(tgbotapi.NewMessage(chatID, "❌ Ви відписалися від розсилки."))
 
 		case "interval":
 			msg := tgbotapi.NewMessage(chatID, "⚙️ *Оберіть частоту автоматичних повідомлень:*")
