@@ -33,6 +33,7 @@ var messages = map[string]map[string]string{
 		"dynamics":   " Динаміка зафіксована",
 		"unit_m":     "хв",
 		"unit_h":     "год",
+		"btn_upd":    "🔄 Оновити",
 	},
 	"en": {
 		"welcome":    "Welcome! 🖖 Your crypto assistant is online! ⚡️\n\nWant to keep your finger on the pulse of the market? I'll help!\n\n🔹 *Live rates:* BTC, ETH, USDT in seconds.\n🔹 *Smart alerts:* Choose frequency (1 min – 24h).\n🔹 *UAH market:* USDT to UAH rate.\n\nPress **/subscribe** and stay updated!",
@@ -47,6 +48,7 @@ var messages = map[string]map[string]string{
 		"dynamics":   " Dynamics fixed",
 		"unit_m":     "min",
 		"unit_h":     "h",
+		"btn_upd":    "🔄 Update",
 	},
 	"ru": {
 		"welcome":    "Привет! 🖖 Твой крипто-ассистент на связи! ⚡️\n\nХочешь держать руку на пульсе рынка? Я помогу!\n\n🔹 *Live-курсы:* BTC, ETH, USDT за считанные секунды.\n🔹 *Smart-уведомления:* Выбирай частоту (1 мин – 24 ч).\n🔹 *UAH-маркет:* Курс USDT к гривне.\n\nЖми **/subscribe** и будь в курсе!",
@@ -61,17 +63,19 @@ var messages = map[string]map[string]string{
 		"dynamics":   " Динамика зафиксирована",
 		"unit_m":     "мин",
 		"unit_h":     "ч",
+		"btn_upd":    "🔄 Обновить",
 	},
 }
 
 // --- Клавіатури ---
 
-func getRefreshKeyboard(lang string) tgbotapi.InlineKeyboardMarkup {
-	text := "🔄 Update"
-	if lang == "ua" { text = "🔄 Оновити" } else if lang == "ru" { text = "🔄 Обновить" }
-	return tgbotapi.NewInlineKeyboardMarkup(
+// ВИПРАВЛЕНО: тепер повертає вказівник *tgbotapi.InlineKeyboardMarkup
+func getRefreshKeyboard(lang string) *tgbotapi.InlineKeyboardMarkup {
+	text := messages[lang]["btn_upd"]
+	kb := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(text, "refresh_price")),
 	)
+	return &kb
 }
 
 var langKeyboard = tgbotapi.NewInlineKeyboardMarkup(
@@ -147,7 +151,6 @@ func initDB() {
 	);`)
 	db.Exec(`ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS language_code TEXT DEFAULT 'ua';`)
 	db.Exec(`CREATE TABLE IF NOT EXISTS market_prices (symbol TEXT PRIMARY KEY, price DOUBLE PRECISION);`)
-	log.Println("✅ Database ready.")
 }
 
 func getLang(chatID int64) string {
@@ -163,7 +166,6 @@ func startPriceAlerts(bot *tgbotapi.BotAPI) {
 		rows, err := db.Query(`SELECT chat_id, language_code FROM subscribers WHERE last_sent <= NOW() - (interval_minutes * INTERVAL '1 minute') + INTERVAL '10 seconds'`)
 		if err != nil { continue }
 
-		// Отримуємо ціни один раз для циклу
 		btc := getPriceWithTrend("BTCUSDT", "BTC")
 		eth := getPriceWithTrend("ETHUSDT", "ETH")
 		usdt := getPriceWithTrend("USDTUAH", "USDT")
@@ -230,6 +232,7 @@ func main() {
 				if minutes >= 60 { unit = messages[lang]["unit_h"]; val = minutes/60 }
 				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "OK"))
 				bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ %d %s", val, unit)))
+				continue
 			}
 
 			if data == "refresh_price" {
@@ -238,9 +241,12 @@ func main() {
 				usdt := getPriceWithTrend("USDTUAH", "USDT")
 				t := time.Now().In(kyivLoc).Format("15:04:05")
 				text := fmt.Sprintf(messages[lang]["updated"]+"\n\n%s\n%s\n%s\n\n_%s_", t, btc, eth, usdt, messages[lang]["dynamics"])
+				
 				edit := tgbotapi.NewEditMessageText(chatID, update.CallbackQuery.Message.MessageID, text)
 				edit.ParseMode = "Markdown"
+				// ВИПРАВЛЕНО: тепер функція повертає правильний тип *InlineKeyboardMarkup
 				edit.ReplyMarkup = getRefreshKeyboard(lang)
+				
 				bot.Send(edit)
 				bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "OK"))
 			}
@@ -261,7 +267,7 @@ func main() {
 			msg.ReplyMarkup = langKeyboard
 			bot.Send(msg)
 		case "subscribe":
-			db.Exec("INSERT INTO subscribers (chat_id, language_code) VALUES ($1, 'ua') ON CONFLICT (chat_id) DO UPDATE SET language_code = subscribers.language_code", chatID)
+			db.Exec("INSERT INTO subscribers (chat_id, language_code) VALUES ($1, 'ua') ON CONFLICT (chat_id) DO NOTHING", chatID)
 			bot.Send(tgbotapi.NewMessage(chatID, messages[lang]["subscribe"]))
 		case "unsubscribe":
 			db.Exec("DELETE FROM subscribers WHERE chat_id = $1", chatID)
@@ -275,7 +281,8 @@ func main() {
 			eth := getPriceWithTrend("ETHUSDT", "ETH")
 			usdt := getPriceWithTrend("USDTUAH", "USDT")
 			text := fmt.Sprintf(messages[lang]["price_hdr"]+"\n\n%s\n%s\n%s", btc, eth, usdt)
-			msg := tgbotapi.NewMessage(chatID, text); msg.ParseMode = "Markdown"
+			msg := tgbotapi.NewMessage(chatID, text)
+			msg.ParseMode = "Markdown"
 			msg.ReplyMarkup = getRefreshKeyboard(lang)
 			bot.Send(msg)
 		}
