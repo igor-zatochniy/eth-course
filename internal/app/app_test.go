@@ -101,6 +101,19 @@ func TestMetricsAuthMiddleware(t *testing.T) {
 	}
 }
 
+func TestReadinessRejectsRequestsDuringShutdown(t *testing.T) {
+	application := &App{}
+	application.stopAcceptingProducers()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	application.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readiness status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
+	}
+}
+
 func TestCronAuthenticationPrecedesRateLimit(t *testing.T) {
 	application := &App{cronSecret: "cron-secret"}
 	limiter := rate.NewLimiter(rate.Every(time.Hour), 1)

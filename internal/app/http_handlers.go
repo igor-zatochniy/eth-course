@@ -34,12 +34,23 @@ func (a *App) Handler() http.Handler {
 		_, _ = w.Write([]byte("OK"))
 	}))
 	mux.HandleFunc("/ready", httpserver.Method(http.MethodGet, func(w http.ResponseWriter, r *http.Request) {
+		if a.isShuttingDown() {
+			http.Error(w, "Service Shutting Down", http.StatusServiceUnavailable)
+			return
+		}
+
 		dbCheckCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		if err := a.db.PingContext(dbCheckCtx); err != nil {
 			appmetrics.DBOperationsTotal.WithLabelValues("readiness_ping", "error").Inc()
 			slog.Error("readiness check failed", "error", err)
 			http.Error(w, "Database Unreachable", http.StatusServiceUnavailable)
+			return
+		}
+		a.producerMu.Lock()
+		defer a.producerMu.Unlock()
+		if a.shuttingDown {
+			http.Error(w, "Service Shutting Down", http.StatusServiceUnavailable)
 			return
 		}
 		appmetrics.DBOperationsTotal.WithLabelValues("readiness_ping", "success").Inc()
@@ -100,6 +111,12 @@ func (a *App) stopAcceptingProducers() {
 	a.producerMu.Lock()
 	a.shuttingDown = true
 	a.producerMu.Unlock()
+}
+
+func (a *App) isShuttingDown() bool {
+	a.producerMu.Lock()
+	defer a.producerMu.Unlock()
+	return a.shuttingDown
 }
 
 func (a *App) waitForProducers(ctx context.Context) error {

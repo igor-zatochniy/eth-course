@@ -168,14 +168,15 @@ sudo netfilter-persistent reload
 На Hetzner:
 
 ```bash
-sudo mkdir -p /root/backups
-sudo -u postgres pg_dump -Fc -d <database_name> -f /root/backups/cryptopulse_YYYYMMDD_HHMM.dump
+sudo install -d -o postgres -g postgres -m 0700 /var/backups/cryptopulse
+sudo -u postgres pg_dump -Fc -d <database_name> -f /var/backups/cryptopulse/cryptopulse_YYYYMMDD_HHMM.dump
 ```
 
 Перевірити, що backup створився:
 
 ```bash
-sudo ls -lh /root/backups
+sudo -u postgres pg_restore --list /var/backups/cryptopulse/cryptopulse_YYYYMMDD_HHMM.dump > /dev/null
+sudo ls -lh /var/backups/cryptopulse
 ```
 
 Рекомендації:
@@ -189,17 +190,21 @@ sudo ls -lh /root/backups
 
 Перед restore переконайтеся, що це правильна база і правильний backup.
 
-Приклад restore у наявну базу:
+Приклад безпечної перевірки restore у тимчасовій базі:
 
 ```bash
-sudo -u postgres pg_restore --clean --if-exists -d <database_name> /root/backups/<backup_file>
+sudo -u postgres createdb <temporary_database_name>
+sudo -u postgres pg_restore --exit-on-error -d <temporary_database_name> /var/backups/cryptopulse/<backup_file>
 ```
+
+Спочатку виконуйте restore у тимчасову базу. Не використовуйте `--clean` для production-бази без окремого підтвердженого плану відновлення.
 
 Після restore:
 
 ```bash
-sudo -u postgres psql -d <database_name> -c "SELECT COUNT(*) FROM subscribers;"
-sudo -u postgres psql -d <database_name> -c "SELECT COUNT(*) FROM market_prices;"
+sudo -u postgres psql -d <temporary_database_name> -c "SELECT COUNT(*) FROM subscribers;"
+sudo -u postgres psql -d <temporary_database_name> -c "SELECT COUNT(*) FROM market_prices;"
+sudo -u postgres dropdb <temporary_database_name>
 ```
 
 ## Health Checks
@@ -264,7 +269,8 @@ curl -X POST \
 
 Очікувані відповіді:
 
-- `200 OK`: cron batch оброблено або немає due subscribers.
+- `202 Accepted`: notification jobs надійно збережено в PostgreSQL і передано фоновим workers.
+- `200 OK`: немає due subscribers або нових jobs для створення.
 - `401 Unauthorized`: неправильний або відсутній token.
 - `409 Conflict`: попередній cron run ще виконується.
 - `429 Too Many Requests`: rate limit.
