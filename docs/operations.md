@@ -52,7 +52,7 @@ Hetzner PostgreSQL
 - Merge в `main` і дочекатися нового Koyeb deployment.
 - Перевірити в startup logs успішне застосування migrations та schema verification.
 - Перевірити `/live`, `/ready`, `/metrics`.
-- Перевірити, що cron-job.org отримує `200 OK` від `/cron`.
+- Перевірити, що cron-job.org отримує `202 Accepted` після створення jobs або `200 OK`, якщо нових jobs немає.
 
 ## Deployment Order
 

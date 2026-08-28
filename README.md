@@ -116,7 +116,7 @@ flowchart LR
 | `/live` | `GET` | none | Liveness check. Не звертається до зовнішніх залежностей. |
 | `/ready` | `GET` | none | Readiness check. Перевіряє підключення до PostgreSQL. |
 | `/webhook` | `POST` | `X-Telegram-Bot-Api-Secret-Token` | Зберігає Telegram update у durable inbox перед `200 OK`. |
-| `/cron` | `POST` | `Authorization: Bearer <CRON_SECRET>` | Забирає due subscribers і надсилає заплановані сповіщення. |
+| `/cron` | `POST` | `Authorization: Bearer <CRON_SECRET>` | Створює durable notification jobs для due subscribers; доставку виконують фонові workers. |
 | `/metrics` | `GET` | `Authorization: Bearer <METRICS_SECRET>` | Prometheus metrics. |
 
 ## Змінні Середовища
