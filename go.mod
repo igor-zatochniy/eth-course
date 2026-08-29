@@ -1,8 +1,8 @@
 module github.com/igor-zatochniy/cryptopulse-telegram-bot
 
-go 1.25.0
+go 1.26.0
 
-toolchain go1.25.13
+toolchain go1.26.7
 
 require (
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
